@@ -1,0 +1,1667 @@
+import express from 'express';
+import dotenv from 'dotenv';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+
+dotenv.config({ path: '.env.local' });
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = Number(process.env.PORT || 8787);
+const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY || process.env.GEMINI_API_KEY || '';
+const SILICONFLOW_BASE_URL = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1';
+const SILICONFLOW_MODEL = process.env.SILICONFLOW_MODEL || 'Qwen/Qwen3-32B';
+const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
+const TAVILY_BASE_URL = process.env.TAVILY_BASE_URL || 'https://api.tavily.com/search';
+const GOOGLE_BOOKS_BASE_URL = process.env.GOOGLE_BOOKS_BASE_URL || 'https://www.googleapis.com/books/v1/volumes';
+const OPEN_LIBRARY_BASE_URL = process.env.OPEN_LIBRARY_BASE_URL || 'https://openlibrary.org/search.json';
+const SILICONFLOW_TIMEOUT_MS = Number(process.env.SILICONFLOW_TIMEOUT_MS || 90000);
+const TAVILY_TIMEOUT_MS = Number(process.env.TAVILY_TIMEOUT_MS || 12000);
+const GOOGLE_BOOKS_TIMEOUT_MS = Number(process.env.GOOGLE_BOOKS_TIMEOUT_MS || 12000);
+const OPEN_LIBRARY_TIMEOUT_MS = Number(process.env.OPEN_LIBRARY_TIMEOUT_MS || 12000);
+
+app.use(express.json({ limit: '2mb' }));
+
+const fallbackCover = 'https://images.unsplash.com/photo-1512820790803-83ca734da794?q=80&w=800&auto=format&fit=crop';
+
+const libraryMaps = [
+  {
+    id: '1',
+    title: 'The Book of Elon',
+    author: 'Walter Isaacson',
+    aliases: ['The Book of Elon', 'Elon Musk', '马斯克传', '书 of Elon'],
+    cover: 'https://images.unsplash.com/photo-1617791160505-6f00504e3519?q=80&w=800&auto=format&fit=crop',
+    oneLiner: {
+      zh: '把马斯克的世界观、方法论与文明野心拆成一张可浏览的阅读地图。',
+      en: 'A map of Musk’s worldview, operating methods, and civilizational ambition.',
+    },
+    saves: 12450,
+    status: 'has_map',
+    visibility: 'public',
+    sourceMeta: {
+      kind: 'library',
+      mode: 'source-grounded',
+      summary: '来自项目内已整理样本，适合拿来对标阅读深度与页面结构。',
+    },
+  },
+  {
+    id: '2',
+    title: '定位 (Positioning)',
+    author: 'Al Ries, Jack Trout',
+    aliases: ['定位', 'Positioning', '品牌定位', 'Al Ries', 'Jack Trout'],
+    cover: 'https://images.unsplash.com/photo-1557804506-669a67965ba0?q=80&w=800&auto=format&fit=crop',
+    oneLiner: {
+      zh: '品牌不是把自己讲完整，而是先在用户心智里抢到一个清楚的位置。',
+      en: 'Brands win by owning a clear slot in the customer’s mind.',
+    },
+    saves: 8920,
+    status: 'has_map',
+    visibility: 'public',
+    sourceMeta: {
+      kind: 'library',
+      mode: 'source-grounded',
+      summary: '来自项目内已整理样本，适合验证方法论书的地图结构。',
+    },
+  },
+];
+
+function normalize(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\s'"“”‘’.,:;!?()[\]{}\-_/]+/g, '');
+}
+
+function tokenize(value) {
+  return String(value || '')
+    .toLowerCase()
+    .split(/[\s/,:;!?()[\]{}"'“”‘’.\-]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function toSlug(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+}
+
+function splitParagraphs(text) {
+  return String(text || '')
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 20);
+}
+
+function hasKnownAuthor(value) {
+  const author = String(value || '').trim();
+  return Boolean(author) && author !== '待补充作者' && author !== 'Unknown' && author !== '作者待识别';
+}
+
+function dedupeBooks(books) {
+  const seen = new Set();
+  return books.filter((book) => {
+    const key = `${normalize(book.title)}::${normalize(book.author)}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function scoreLibraryBook(book, query) {
+  const normalizedQuery = normalize(query);
+  const fields = [book.title, book.author, ...(book.aliases || [])].map(normalize);
+
+  let score = 0;
+  fields.forEach((field) => {
+    if (!field) {
+      return;
+    }
+
+    if (field === normalizedQuery) {
+      score += 160;
+    } else if (field.startsWith(normalizedQuery)) {
+      score += 90;
+    } else if (field.includes(normalizedQuery)) {
+      score += 45;
+    }
+  });
+
+  tokenize(query).forEach((token) => {
+    const normalizedToken = normalize(token);
+    fields.forEach((field) => {
+      if (normalizedToken && field.includes(normalizedToken)) {
+        score += 18;
+      }
+    });
+  });
+
+  return score;
+}
+
+function searchLocalLibrary(query) {
+  const trimmed = String(query || '').trim();
+  if (!trimmed) {
+    return libraryMaps;
+  }
+
+  return libraryMaps
+    .map((book) => ({ book, score: scoreLibraryBook(book, trimmed) }))
+    .filter((item) => item.score >= 60)
+    .sort((a, b) => b.score - a.score)
+    .map(({ book }) => book);
+}
+
+function buildPrototypeMap(input) {
+  const title = input.title || '未命名书稿';
+  const paragraphs = splitParagraphs(input.content);
+  const excerpt = paragraphs.slice(0, 4);
+  const aboutText =
+    excerpt.length > 0
+      ? excerpt.join(' ').slice(0, 240)
+      : `当前还没有拿到稳定模型结果，我先基于《${title}》生成一版可浏览的演示地图，用来验证上传、搜索和阅读交互链路。`;
+  const titleSlug = toSlug(title) || `generated-${Date.now()}`;
+
+  return {
+    id: `generated-${titleSlug}-${Date.now()}`,
+    title,
+    author: input.author || (input.sourceKind === 'upload' ? '上传文件' : ''),
+    cover: fallbackCover,
+    aliases: [title],
+    oneLiner: {
+      zh: `演示版阅读地图：先帮你把《${title}》压成可浏览结构，再决定是否继续做深度制作。`,
+      en: `Prototype map for ${title}.`,
+    },
+    about: {
+      zh: aboutText,
+      en: aboutText,
+    },
+    stats: {
+      structure: 4,
+      volume: Math.min(Math.max(Math.ceil(String(input.content || '').length / 900), 80), 480),
+    },
+    readingPosition: {
+      zh: input.sourceKind === 'upload'
+        ? '这是一版基于上传文本的原型地图，适合先验证结构与阅读体验，再决定是否继续补强深度。'
+        : '这是一版基于书名触发的演示地图，结构可用，但内容深度仍应以真实书源为准。',
+    },
+    overview: {
+      title: '先把书变成四块可读结构',
+      subtitle: '原型模式下先稳定信息结构，让上传、搜索和地图页可以完整走通。',
+      cards: [
+        {
+          layer: '第一层',
+          title: '这本书到底在处理什么问题',
+          desc: excerpt[0] || `先围绕《${title}》的核心命题建立阅读入口，避免一上来就掉进细节。`,
+          points: ['主问题', '核心判断', '阅读价值'],
+          color: 'from-orange-500 to-amber-500',
+        },
+        {
+          layer: '第二层',
+          title: '作者主要用什么结构展开',
+          desc: excerpt[1] || '把章节重新压缩成模块，让阅读先看到骨架再进细节。',
+          points: ['背景铺垫', '结构骨架', '关键转折'],
+          color: 'from-sky-500 to-cyan-500',
+        },
+        {
+          layer: '第三层',
+          title: '读完真正该带走什么',
+          desc: excerpt[2] || '把原文里可复用的判断、方法和提醒收成携带型结构。',
+          points: ['判断标准', '方法提炼', '行动抓手'],
+          color: 'from-emerald-500 to-teal-500',
+        },
+        {
+          layer: '第四层',
+          title: '不同读者该怎么读',
+          desc: excerpt[3] || '不是每个人都要完整读完，所以地图要给不同阅读路径。',
+          points: ['速读路线', '工作路线', '深读路线'],
+          color: 'from-fuchsia-500 to-pink-500',
+        },
+      ],
+    },
+    knowledgeMap: {
+      areas: [
+        { title: '核心命题', status: '已抽取', progress: 86, color: 'bg-orange-500', desc: '先看作者究竟要解决什么问题。' },
+        { title: '结构骨架', status: '已抽取', progress: 72, color: 'bg-cyan-500', desc: '把章节内容压成更适合浏览的模块。' },
+        { title: '方法与工具', status: '待补强', progress: 58, color: 'bg-emerald-500', desc: '适合继续通过真实模型补强方法与例证。' },
+        { title: '今天再读的价值', status: '待判断', progress: 44, color: 'bg-pink-500', desc: '需要结合书的类型和目标读者来判断。' },
+      ],
+      tools: [
+        { title: '先看问题，不急着看目录', desc: '先回答“这本书在解决什么”。', points: ['看命题', '看结构', '看方法'] },
+        { title: '把章节压成模块', desc: '模块化后，阅读地图才不会变成目录复述。', points: ['先抽主题', '再压层次', '最后定阅读路线'] },
+      ],
+    },
+    parts: [
+      {
+        id: 'part-1',
+        title: '问题定义',
+        subtitle: '第一部分',
+        navDesc: '先判断这本书要解决的核心问题。',
+        intro: excerpt[0] || '第一部分用于建立进入这本书的基本语境。',
+        tags: ['先看命题', '适合快速判断值不值得读'],
+        task: '搞清楚作者真正的主问题。',
+        takeaways: ['别急着记结论，先抓问题定义。'],
+        chapters: ['背景', '命题', '切入角度'],
+        position: '这是所有后续内容的入口。',
+      },
+      {
+        id: 'part-2',
+        title: '结构展开',
+        subtitle: '第二部分',
+        navDesc: '把原始章节压成更容易浏览的中层结构。',
+        intro: excerpt[1] || '这一部分回答作者如何一步步展开论证。',
+        tags: ['适合扫骨架', '适合快速浏览'],
+        task: '理解全书结构不是目录，而是推进路径。',
+        takeaways: ['先看模块关系，再决定要不要精读。'],
+        chapters: ['模块 A', '模块 B', '模块 C'],
+        position: '它决定你怎么读这本书更省时间。',
+      },
+      {
+        id: 'part-3',
+        title: '方法提炼',
+        subtitle: '第三部分',
+        navDesc: '把可复用的方法和判断从文本里捞出来。',
+        intro: excerpt[2] || '这里不是复述，而是提取对工作和思考有用的方法。',
+        tags: ['可复用', '适合做工作素材'],
+        task: '提炼值得带走的方法、判断和提醒。',
+        takeaways: ['方法要能迁移到别的场景。'],
+        chapters: ['判断标准', '方法动作', '常见误区'],
+        position: '这是把阅读结果资产化的关键一层。',
+      },
+      {
+        id: 'part-4',
+        title: '阅读路线',
+        subtitle: '第四部分',
+        navDesc: '不同读者不必读同一条路线。',
+        intro: excerpt[3] || '最后一层负责把地图变成真正可用的阅读产品。',
+        tags: ['速读', '深读', '复盘'],
+        task: '把不同阅读目标切成不同路线。',
+        takeaways: ['地图不是只有一种读法。'],
+        chapters: ['速读路线', '工作路线', '深读路线'],
+        position: '它让地图比普通摘要更可用。',
+      },
+    ],
+    methods: {
+      categories: ['问题定义', '结构压缩', '方法提炼', '阅读路线'],
+      items: [
+        { id: '01', category: '问题定义', title: '先问主问题', desc: '每本书都有一个真正的主问题，先抓这个。' },
+        { id: '02', category: '结构压缩', title: '章节不等于结构', desc: '要把章节压成少数几个真正有用的模块。' },
+        { id: '03', category: '方法提炼', title: '把观点改写成动作', desc: '能迁移的内容，才适合变成地图资产。' },
+        { id: '04', category: '阅读路线', title: '给不同用户不同读法', desc: '速读、工作、深读的入口要明确分开。' },
+      ],
+    },
+    timeline: [
+      { year: 'Step 1', title: '读命题', desc: '先确认这本书在处理什么问题。' },
+      { year: 'Step 2', title: '压结构', desc: '把原文压成 4 个左右核心模块。' },
+      { year: 'Step 3', title: '提方法', desc: '把能迁移的部分提炼为方法卡。' },
+      { year: 'Step 4', title: '定路线', desc: '给不同读者配置阅读路线。' },
+    ],
+    quotes: [{ quote: `《${title}》的演示版地图已生成。`, note: '当前为模型失败回退模式，主要用于验证产品交互。' }],
+    debates: [{ title: '现在这版值不值得继续补强', value: '它已经能验证上传、搜索、阅读体验这三条链路。', reservation: '如果要达到高质量样本页的深度，仍需要真实书源和模型生成。' }],
+    routes: [
+      { audience: '先快速判断值不值得读的人', route: '先看总览、知识地图、阅读路线。', focus: ['主问题', '四层结构', '速读入口'] },
+      { audience: '要拿来工作的用户', route: '重点看方法提炼和 debate。', focus: ['方法卡', '适用边界', '行动抓手'] },
+    ],
+    saves: 0,
+    status: 'has_map',
+    visibility: 'private',
+    sourceMeta: {
+      kind: input.sourceKind === 'upload' ? 'upload' : 'generated',
+      mode: 'prototype-fallback',
+      summary: input.sourceKind === 'upload'
+        ? '模型不可用或失败，已回退为结构化原型地图，适合验证交互与页面深度。'
+        : '当前以书名生成演示版地图，建议后续接入真实检索书源和异步任务流。',
+    },
+  };
+}
+
+function normalizeGeneratedMap(raw, input) {
+  const fallback = buildPrototypeMap(input);
+  return {
+    ...fallback,
+    ...raw,
+    overview: raw?.overview?.cards?.length >= 4 ? raw.overview : fallback.overview,
+    knowledgeMap:
+      raw?.knowledgeMap?.areas?.length >= 4 && raw?.knowledgeMap?.tools?.length >= 3
+        ? raw.knowledgeMap
+        : fallback.knowledgeMap,
+    parts: raw?.parts?.length >= 4 ? raw.parts : fallback.parts,
+    methods:
+      raw?.methods?.items?.length >= 10 && raw?.methods?.categories?.length >= 3
+        ? raw.methods
+        : fallback.methods,
+    timeline: raw?.timeline?.length >= 4 ? raw.timeline : fallback.timeline,
+    quotes: raw?.quotes?.length >= 4 ? raw.quotes : fallback.quotes,
+    debates: raw?.debates?.length >= 2 ? raw.debates : fallback.debates,
+    routes: raw?.routes?.length >= 3 ? raw.routes : fallback.routes,
+    id: `generated-${toSlug(raw?.title || input.title || 'map')}-${Date.now()}`,
+    title: raw?.title || input.title,
+    author: raw?.author || input.author || fallback.author || '',
+    aliases: [raw?.title || input.title].filter(Boolean),
+    saves: 0,
+    status: 'has_map',
+    visibility: 'private',
+    sourceMeta: {
+      kind: input.sourceKind === 'upload' ? 'upload' : 'generated',
+      mode: input.content ? 'source-grounded' : 'title-only',
+      summary: input.content
+        ? '基于上传内容和补充书目线索做出的结构化阅读地图。'
+        : '基于书名与网页检索线索生成的 reading map，优先保证结构完整与可读性。',
+    },
+  };
+}
+
+function buildEnrichmentPrompt(input, groundingContext, analysisBrief, currentMap) {
+  return `
+你现在要补强一份“阅读地图”，目标不是重写全量 JSON，而是专门补齐当前过薄的区块，让它更接近成熟的阅读地图产品。
+
+规则：
+1. 只返回 JSON。
+2. 只补这些字段：knowledgeMap、parts、methods、timeline、quotes、debates、routes。
+3. 内容要具体，不要空话。
+4. 如果是 title-only 模式，可以基于补充线索和常识做高质量概括，但不要假造非常细碎的章节原文。
+5. 目标数量：
+   - knowledgeMap.areas: 4 到 6 个
+   - knowledgeMap.tools: 4 到 6 个
+   - parts: 4 到 6 个
+   - methods.items: 10 到 14 条
+   - timeline: 4 到 6 条
+   - quotes: 4 到 6 条
+   - debates: 2 到 4 条
+   - routes: 3 到 4 条
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+当前地图 JSON：
+${JSON.stringify(currentMap).slice(0, 12000)}
+
+返回 JSON：
+{
+  "knowledgeMap": {
+    "areas": [
+      { "title": "领域", "status": "状态", "progress": 80, "color": "bg-orange-500", "desc": "描述" }
+    ],
+    "tools": [
+      { "title": "工具", "desc": "描述", "points": ["点1", "点2", "点3"] }
+    ]
+  },
+  "parts": [
+    {
+      "id": "part-1",
+      "title": "模块名",
+      "subtitle": "第一部分",
+      "navDesc": "导航描述",
+      "intro": "模块介绍",
+      "tags": ["标签1", "标签2"],
+      "task": "这一部分的任务",
+      "takeaways": ["要点1", "要点2"],
+      "chapters": ["章节1", "章节2"],
+      "position": "怎么理解它的位置"
+    }
+  ],
+  "methods": {
+    "categories": ["分类1", "分类2"],
+    "items": [
+      { "id": "01", "category": "分类1", "title": "方法名", "desc": "方法描述" }
+    ]
+  },
+  "timeline": [
+    { "year": "阶段", "title": "标题", "desc": "描述" }
+  ],
+  "quotes": [
+    { "quote": "关键句或关键判断", "note": "为什么重要" }
+  ],
+  "debates": [
+    { "title": "争议点", "value": "值得带走", "reservation": "需要保留看" }
+  ],
+  "routes": [
+    { "audience": "读者类型", "route": "阅读路线", "focus": ["重点1", "重点2"] }
+  ]
+}
+  `.trim();
+}
+
+function renumberMethodItems(items) {
+  return items.map((item, index) => ({
+    ...item,
+    id: String(index + 1).padStart(2, '0'),
+  }));
+}
+
+function extendMethodsFallback(currentMap) {
+  const baseItems = Array.isArray(currentMap?.methods?.items) ? [...currentMap.methods.items] : [];
+  const seen = new Set(baseItems.map((item) => normalize(`${item.category}-${item.title}`)));
+  const categories = Array.isArray(currentMap?.methods?.categories) ? [...currentMap.methods.categories] : [];
+
+  const pushMethod = (category, title, desc) => {
+    const key = normalize(`${category}-${title}`);
+    if (!title || seen.has(key) || baseItems.length >= 14) {
+      return;
+    }
+    seen.add(key);
+    if (category && !categories.includes(category)) {
+      categories.push(category);
+    }
+    baseItems.push({
+      id: String(baseItems.length + 1).padStart(2, '0'),
+      category: category || categories[0] || '阅读方法',
+      title,
+      desc,
+    });
+  };
+
+  (currentMap?.knowledgeMap?.tools || []).forEach((tool) => {
+    pushMethod('判断工具', tool.title, tool.desc);
+    (tool.points || []).forEach((point) => {
+      pushMethod('判断工具', point, `${tool.title} 的具体观察点，用来把抽象观点落成可操作的判断动作。`);
+    });
+  });
+
+  (currentMap?.parts || []).forEach((part) => {
+    pushMethod('阅读骨架', part.title, part.task || part.navDesc || '把这部分当作理解全书结构的支点。');
+    (part.takeaways || []).forEach((takeaway) => {
+      pushMethod('阅读骨架', takeaway, `${part.title} 里最值得迁移的一条判断。`);
+    });
+  });
+
+  return {
+    categories: categories.slice(0, 6),
+    items: renumberMethodItems(baseItems.slice(0, 14)),
+  };
+}
+
+function buildMethodsBoosterPrompt(input, groundingContext, analysisBrief, currentMap) {
+  return `
+你现在只负责把 methods 扩写到成熟阅读地图的水平。
+
+只返回 JSON：
+{
+  "methods": {
+    "categories": ["分类1", "分类2", "分类3"],
+    "items": [
+      { "id": "01", "category": "分类1", "title": "方法名", "desc": "方法描述" }
+    ]
+  }
+}
+
+要求：
+- 目标是 12 到 16 条方法卡。
+- 不要重复当前已有方法卡。
+- 方法卡要像“判断工具、分析动作、识别框架”，不是概念复述。
+- 如果当前地图已有不错的方法卡，可以保留并补足。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+
+${editorialStyleGuide}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+当前地图：
+${JSON.stringify({ methods: currentMap.methods, knowledgeMap: currentMap.knowledgeMap, parts: currentMap.parts }).slice(0, 10000)}
+  `.trim();
+}
+
+function buildQuotesBoosterPrompt(input, groundingContext, analysisBrief, currentMap) {
+  return `
+你现在只负责输出 quotes。
+
+只返回 JSON：
+{
+  "quotes": [
+    { "quote": "关键句", "note": "为什么重要" }
+  ]
+}
+
+要求：
+- 目标是 5 到 8 条。
+- 如果补充线索里有“候选原句”，优先直接使用这些短句，并尽量保留原始措辞。
+- quote 尽量短、硬、可记忆。
+- note 要解释这句为什么是这本书真正的判断，不要空话。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+
+${editorialStyleGuide}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+当前地图：
+${JSON.stringify({ quotes: currentMap.quotes, overview: currentMap.overview, parts: currentMap.parts }).slice(0, 8000)}
+  `.trim();
+}
+
+async function enrichEditorialDepth(input, groundingContext, analysisBrief, currentMap) {
+  let nextMap = { ...currentMap };
+
+  if (!nextMap?.methods?.items || nextMap.methods.items.length < 12) {
+    try {
+      const boostedMethods = await callSiliconFlow({
+        prompt: buildMethodsBoosterPrompt(input, groundingContext, analysisBrief, nextMap),
+        maxTokens: 1400,
+        temperature: 0.25,
+        responseFormat: 'json_object',
+      });
+
+      if (Array.isArray(boostedMethods?.methods?.items) && boostedMethods.methods.items.length) {
+        nextMap.methods = {
+          categories: boostedMethods.methods.categories || nextMap.methods?.categories || [],
+          items: renumberMethodItems(boostedMethods.methods.items.slice(0, 14)),
+        };
+      }
+    } catch (error) {
+      console.warn('Methods booster failed, using structural fallback.', error);
+      nextMap.methods = extendMethodsFallback(nextMap);
+    }
+  }
+
+  if (!nextMap?.quotes || nextMap.quotes.length < 5) {
+    try {
+      const boostedQuotes = await callSiliconFlow({
+        prompt: buildQuotesBoosterPrompt(input, groundingContext, analysisBrief, nextMap),
+        maxTokens: 900,
+        temperature: 0.2,
+        responseFormat: 'json_object',
+      });
+
+      if (Array.isArray(boostedQuotes?.quotes) && boostedQuotes.quotes.length) {
+        nextMap.quotes = boostedQuotes.quotes.slice(0, 8);
+      }
+    } catch (error) {
+      console.warn('Quotes booster failed, keeping existing quotes.', error);
+    }
+  }
+
+  return nextMap;
+}
+
+async function enrichSparseMap(input, groundingContext, analysisBrief, currentMap) {
+  const needsEnrichment =
+    !currentMap?.knowledgeMap?.tools || currentMap.knowledgeMap.tools.length < 4 ||
+    !currentMap?.parts || currentMap.parts.length < 4 ||
+    !currentMap?.methods?.items || currentMap.methods.items.length < 10 ||
+    !currentMap?.quotes || currentMap.quotes.length < 4 ||
+    !currentMap?.routes || currentMap.routes.length < 3;
+
+  if (!needsEnrichment) {
+    return currentMap;
+  }
+
+  try {
+    const enriched = await callSiliconFlow({
+      prompt: buildEnrichmentPrompt(input, groundingContext, analysisBrief, currentMap),
+      maxTokens: 2200,
+      temperature: 0.25,
+      responseFormat: 'json_object',
+    });
+
+    return {
+      ...currentMap,
+      knowledgeMap:
+        enriched?.knowledgeMap?.areas?.length || enriched?.knowledgeMap?.tools?.length
+          ? enriched.knowledgeMap
+          : currentMap.knowledgeMap,
+      parts: Array.isArray(enriched?.parts) && enriched.parts.length ? enriched.parts : currentMap.parts,
+      methods:
+        Array.isArray(enriched?.methods?.items) && enriched.methods.items.length
+          ? enriched.methods
+          : currentMap.methods,
+      timeline: Array.isArray(enriched?.timeline) && enriched.timeline.length ? enriched.timeline : currentMap.timeline,
+      quotes: Array.isArray(enriched?.quotes) && enriched.quotes.length ? enriched.quotes : currentMap.quotes,
+      debates: Array.isArray(enriched?.debates) && enriched.debates.length ? enriched.debates : currentMap.debates,
+      routes: Array.isArray(enriched?.routes) && enriched.routes.length ? enriched.routes : currentMap.routes,
+    };
+  } catch (error) {
+    console.warn('Sparse map enrichment failed, keeping base map.', error);
+    return currentMap;
+  }
+}
+
+function stripCodeFence(text) {
+  return String(text || '')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+}
+
+function deepCleanChineseText(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => deepCleanChineseText(item));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deepCleanChineseText(item)]));
+  }
+
+  return value;
+}
+
+function extractJsonCandidate(text) {
+  const cleaned = stripCodeFence(text);
+  const candidates = [cleaned];
+  const objectStart = cleaned.indexOf('{');
+  const objectEnd = cleaned.lastIndexOf('}');
+  if (objectStart !== -1 && objectEnd !== -1 && objectEnd > objectStart) {
+    candidates.push(cleaned.slice(objectStart, objectEnd + 1));
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    try {
+      return JSON.parse(candidate);
+    } catch (_error) {
+      continue;
+    }
+  }
+
+  throw new SyntaxError(`Unable to parse model JSON. Preview: ${cleaned.slice(0, 240)}`);
+}
+
+async function callSiliconFlow({ prompt, maxTokens = 5000, temperature = 0.35, responseFormat = 'json_object' }) {
+  const response = await fetch(`${SILICONFLOW_BASE_URL}/chat/completions`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(SILICONFLOW_TIMEOUT_MS),
+    headers: {
+      Authorization: `Bearer ${SILICONFLOW_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: SILICONFLOW_MODEL,
+      stream: false,
+      max_tokens: maxTokens,
+      temperature,
+      response_format: responseFormat === 'json_object' ? { type: 'json_object' } : undefined,
+      messages: [
+        {
+          role: 'system',
+          content: responseFormat === 'json_object'
+            ? 'You are a senior reading-map editor. Output valid JSON only.'
+            : 'You are a senior reading-map editor. Output concise, high-density working notes in Chinese.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`SiliconFlow API error ${response.status}: ${detail}`);
+  }
+
+  const payload = await response.json();
+  const content = payload?.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error('SiliconFlow returned an empty response.');
+  }
+
+  return responseFormat === 'json_object' ? extractJsonCandidate(content) : content.trim();
+}
+
+async function translateMapToEnglish(map) {
+  if (!SILICONFLOW_API_KEY) {
+    return map;
+  }
+
+  const prompt = `
+You are a professional literary translator for a reading-product UI.
+
+Translate all user-facing Chinese text in the following reading-map JSON into natural English.
+
+Rules:
+1. Return JSON only.
+2. Keep structure, ids, numbers, arrays, colors, URLs, and object keys unchanged.
+3. Translate every visible Chinese sentence into English.
+4. Keep book titles and author names in their original language when they are proper nouns, but translate explanatory copy around them.
+5. Do not leave Chinese text in the result unless it is a proper noun that should remain unchanged.
+
+JSON:
+${JSON.stringify(map).slice(0, 40000)}
+  `.trim();
+
+  try {
+    const translated = await callSiliconFlow({
+      prompt,
+      maxTokens: 2600,
+      temperature: 0.15,
+      responseFormat: 'json_object',
+    });
+    return deepCleanChineseText(translated);
+  } catch (error) {
+    console.warn('Map translation failed, keeping original map.', error);
+    return map;
+  }
+}
+
+async function searchTavily(query, options = {}) {
+  if (!TAVILY_API_KEY || !String(query || '').trim()) {
+    return [];
+  }
+
+  const {
+    searchDepth = 'basic',
+    maxResults = 5,
+    includeRawContent = false,
+  } = options;
+
+  const response = await fetch(TAVILY_BASE_URL, {
+    method: 'POST',
+    signal: AbortSignal.timeout(TAVILY_TIMEOUT_MS),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      api_key: TAVILY_API_KEY,
+      query,
+      topic: 'general',
+      search_depth: searchDepth,
+      max_results: maxResults,
+      include_answer: false,
+      include_raw_content: includeRawContent,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Tavily API error ${response.status}: ${detail}`);
+  }
+
+  const payload = await response.json();
+  return Array.isArray(payload.results) ? payload.results : [];
+}
+
+async function searchGoogleBooks(query, maxResults = 5) {
+  if (!String(query || '').trim()) {
+    return [];
+  }
+
+  const url = new URL(GOOGLE_BOOKS_BASE_URL);
+  url.searchParams.set('q', query);
+  url.searchParams.set('maxResults', String(maxResults));
+  url.searchParams.set('printType', 'books');
+
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(GOOGLE_BOOKS_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Google Books API error ${response.status}: ${detail}`);
+  }
+
+  const payload = await response.json();
+  return Array.isArray(payload.items) ? payload.items : [];
+}
+
+async function searchOpenLibrary(query, limit = 5) {
+  if (!String(query || '').trim()) {
+    return [];
+  }
+
+  const url = new URL(OPEN_LIBRARY_BASE_URL);
+  url.searchParams.set('q', query);
+  url.searchParams.set('limit', String(limit));
+
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(OPEN_LIBRARY_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Open Library API error ${response.status}: ${detail}`);
+  }
+
+  const payload = await response.json();
+  return Array.isArray(payload.docs) ? payload.docs : [];
+}
+
+function sanitizeCoverUrl(url) {
+  return String(url || '').replace(/^http:\/\//i, 'https://');
+}
+
+function buildGoogleCandidates(query, googleItems) {
+  return googleItems.map((item, index) => {
+    const volumeInfo = item.volumeInfo || {};
+    const title = volumeInfo.title || query;
+    const author = Array.isArray(volumeInfo.authors) ? volumeInfo.authors.join(', ') : '';
+    const cover =
+      sanitizeCoverUrl(volumeInfo.imageLinks?.thumbnail) ||
+      sanitizeCoverUrl(volumeInfo.imageLinks?.smallThumbnail) ||
+      fallbackCover;
+
+    return {
+      id: `google-${item.id || toSlug(title)}-${index}`,
+      title,
+      author,
+      cover,
+      oneLiner: { zh: volumeInfo.description ? String(volumeInfo.description).slice(0, 120) : `来自全网检索，可继续消耗积分生成《${title}》地图。` },
+      saves: 0,
+      status: 'no_map_paid',
+      aliases: [title, ...(volumeInfo.subtitle ? [volumeInfo.subtitle] : [])],
+      subtitle: volumeInfo.subtitle,
+      firstPublishYear: volumeInfo.publishedDate ? Number(String(volumeInfo.publishedDate).slice(0, 4)) : undefined,
+      source: 'catalog',
+      matchReason: volumeInfo.categories?.[0] || '来自 Google Books 书籍元数据。',
+    };
+  });
+}
+
+function buildOpenLibraryCandidates(query, docs) {
+  return docs.map((doc, index) => {
+    const title = doc.title || query;
+    const author = Array.isArray(doc.author_name) ? doc.author_name.join(', ') : '';
+    const cover = doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg` : fallbackCover;
+
+    return {
+      id: `openlibrary-${doc.key || toSlug(title)}-${index}`,
+      title,
+      author,
+      cover,
+      oneLiner: {
+        zh: doc.first_sentence?.[0] || doc.subject?.slice(0, 3).join(' / ') || `已识别到《${title}》的公开书目信息。`,
+      },
+      saves: 0,
+      status: 'no_map_paid',
+      aliases: [title, ...(doc.alternate_title || [])].filter(Boolean),
+      firstPublishYear: doc.first_publish_year,
+      source: 'openlibrary',
+      matchReason: doc.publisher?.[0] || '来自 Open Library 书目元数据。',
+    };
+  });
+}
+
+function mergeTavilyResults(resultGroups) {
+  const seen = new Set();
+  const merged = [];
+
+  resultGroups.flat().forEach((item) => {
+    const key = `${item.url || ''}::${normalize(item.title || '')}`;
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    merged.push(item);
+  });
+
+  return merged;
+}
+
+function formatTavilyResults(results) {
+  return results
+    .map((item, index) => {
+      const title = item.title || 'Untitled';
+      const url = item.url || '';
+      const content = (item.content || '').slice(0, 480);
+      return `${index + 1}. ${title}\nURL: ${url}\n摘要: ${content}`;
+    })
+    .join('\n\n');
+}
+
+function splitSentences(text) {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[。！？!?.；;])/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function extractCandidateQuotes(results) {
+  const collected = [];
+  const seen = new Set();
+
+  const pushQuote = (quote, sourceTitle) => {
+    const cleaned = String(quote || '')
+      .replace(/\s+/g, ' ')
+      .replace(/^[“"'「『]+|[”"'」』]+$/g, '')
+      .trim();
+
+    if (cleaned.length < 8 || cleaned.length > 42) {
+      return;
+    }
+
+    const key = normalize(cleaned);
+    if (!key || seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    collected.push({ quote: cleaned, sourceTitle });
+  };
+
+  results.forEach((item) => {
+    const texts = [item.content, item.raw_content].filter(Boolean);
+
+    texts.forEach((text) => {
+      const matches = String(text).match(/[“"「『]([^”“"「『」』]{8,42})[”"」』]/g) || [];
+      matches.forEach((match) => pushQuote(match, item.title || '网页线索'));
+
+      splitSentences(text)
+        .filter((sentence) => sentence.length >= 10 && sentence.length <= 42)
+        .filter((sentence) => /政府|市场|地方|改革|财政|增长|经济|政策|土地/.test(sentence))
+        .slice(0, 4)
+        .forEach((sentence) => pushQuote(sentence, item.title || '网页线索'));
+    });
+  });
+
+  return collected.slice(0, 8);
+}
+
+function buildGroundingDossier(results) {
+  const sourceBlock = formatTavilyResults(results.slice(0, 6));
+  const quoteCandidates = extractCandidateQuotes(results);
+
+  if (quoteCandidates.length === 0) {
+    return sourceBlock;
+  }
+
+  const quoteBlock = quoteCandidates
+    .map((item, index) => `${index + 1}. ${item.quote}\n来源线索: ${item.sourceTitle}`)
+    .join('\n\n');
+
+  return `${sourceBlock}\n\n候选原句（若适合，请优先保留这些短句的原始措辞）：\n${quoteBlock}`;
+}
+
+const editorialStyleGuide = `
+写作标准：
+1. 不要写成百科简介，要写成“这本书真正值得读的地方”。
+2. 避免空泛模块名，例如“背景介绍”“政策分析”“经济发展机制”。模块标题要带判断或张力。
+3. 多用这样的句式：
+   - 它真正解释的不是 X，而是 Y
+   - 这部分的重点不在于 A，而在于 B
+   - 作者最有力的判断是……
+4. 方法卡必须像“可迁移的判断工具”，不要写成正确废话。
+5. 争议部分必须写出“为什么值得带走”以及“今天为什么要保留看”。
+6. 如果线索有限，宁可保守，也不要凑概念。
+7. 标题和文案优先追求编辑感、压缩感和可读性，不要堆术语。
+`.trim();
+
+function buildTavilyCandidates(query, tavilyResults) {
+  if (!Array.isArray(tavilyResults) || tavilyResults.length === 0) {
+    return [];
+  }
+
+  return tavilyResults.slice(0, 4).map((item, index) => {
+    const title = String(item.title || query)
+      .split(/[-|｜]/)[0]
+      .trim() || query;
+    const summary = String(item.content || '').trim().slice(0, 140);
+
+    return {
+      id: `web-${toSlug(title || query)}-${index}`,
+      title: title.length > 2 ? title : query,
+      author: '',
+      cover: fallbackCover,
+      oneLiner: { zh: summary || `网页检索命中到与《${query}》相关的图书线索。` },
+      saves: 0,
+      status: 'no_map_paid',
+      aliases: [title, query].filter(Boolean),
+      source: 'catalog',
+      matchReason: summary || '来自网页检索结果，建议继续进入制作链路。',
+    };
+  });
+}
+
+function mergeSearchCandidates(query, localMatches, candidates) {
+  const localByTitle = new Map();
+  libraryMaps.forEach((item) => {
+    [item.title, ...(item.aliases || [])].forEach((alias) => {
+      localByTitle.set(normalize(alias), item);
+    });
+  });
+
+  const merged = [...localMatches];
+
+  candidates.forEach((candidate, index) => {
+    const localHit = localByTitle.get(normalize(candidate.title));
+    if (localHit) {
+      if (!merged.find((item) => item.id === localHit.id)) {
+        merged.push(localHit);
+      }
+      return;
+    }
+
+    merged.push({
+      id: `web-${toSlug(candidate.title || query)}-${index}`,
+      title: candidate.title || query,
+      author: candidate.author || '',
+      cover: candidate.cover || fallbackCover,
+      oneLiner: { zh: candidate.reason || '来自网页检索结果，当前还没有现成地图。' },
+      saves: 0,
+      status: 'no_map_paid',
+      aliases: [candidate.title || query],
+      source: 'catalog',
+      matchReason: candidate.reason || '网页检索命中到相关图书线索。',
+    });
+  });
+
+  const deduped = dedupeBooks(merged);
+  const withKnownAuthors = deduped.filter((item) => hasKnownAuthor(item.author));
+
+  if (withKnownAuthors.length > 0) {
+    return withKnownAuthors;
+  }
+
+  return query.trim()
+    ? [
+        {
+          id: `title-only-${toSlug(query)}`,
+          title: query,
+          author: '',
+          cover: fallbackCover,
+          oneLiner: { zh: `暂时没有识别到稳定作者信息，建议直接按书名《${query}》继续生成。` },
+          saves: 0,
+          status: 'no_map_paid',
+          aliases: [query],
+          source: 'catalog',
+          matchReason: '作者信息不稳定时，默认按书名继续后续生成链路。',
+        },
+      ]
+    : deduped;
+}
+
+async function resolveBookCover(title, author, currentCover) {
+  const safeCurrentCover = String(currentCover || '').trim();
+  if (safeCurrentCover && safeCurrentCover !== fallbackCover && !safeCurrentCover.includes('example.com')) {
+    return safeCurrentCover;
+  }
+
+  try {
+    const results = await searchGoogleBooks([title, author].filter(Boolean).join(' '), 1);
+    const candidate = buildGoogleCandidates(title, results)[0];
+    return candidate?.cover || safeCurrentCover || fallbackCover;
+  } catch (error) {
+    console.warn('Cover lookup failed, keeping fallback cover.', error);
+    return safeCurrentCover || fallbackCover;
+  }
+}
+
+async function buildGroundingContext(input) {
+  const query = [input.title, input.author].filter(Boolean).join(' ');
+  if (!query) {
+    return '';
+  }
+
+  try {
+    const [coreResults, structureResults, quoteResults] = await Promise.all([
+      searchTavily(`${query} 这本书讲什么 核心观点 主要内容`, { searchDepth: 'advanced', maxResults: 3 }),
+      searchTavily(`${query} 目录 章节 框架`, { searchDepth: 'advanced', maxResults: 3 }),
+      searchTavily(`${query} 书摘 金句 摘录 摘抄`, { searchDepth: 'advanced', maxResults: 3, includeRawContent: true }),
+    ]);
+    const results = mergeTavilyResults([coreResults, structureResults, quoteResults]);
+    if (results.length === 0) {
+      return '';
+    }
+    return buildGroundingDossier(results);
+  } catch (error) {
+    console.warn('Tavily grounding search failed.', error);
+    return '';
+  }
+}
+
+async function buildAnalysisBrief(input, groundingContext) {
+  if (!SILICONFLOW_API_KEY) {
+    return '';
+  }
+
+  const prompt = `
+你现在是“阅读地图内容架构师”。请先基于书籍内容和补充线索，产出一份高密度中文分析草稿，供后续生成阅读地图。
+
+要求：
+1. 不要复述目录，要重新压缩成知识系统。
+2. 必须输出这些部分：
+   - 一句话结论
+   - 4 到 6 个核心模块
+   - 8 到 12 条关键方法/判断
+   - 4 到 6 个关键领域
+   - 4 到 6 个时间线/发展阶段
+   - 4 到 6 条关键句或关键判断
+   - 2 到 4 个争议/边界
+   - 3 条阅读路线
+3. 写得像高质量编辑工作笔记，不要写空话。
+4. 如果来源不足，要明确保守，不要硬编。
+5. 模块标题和判断要有编辑压缩感，不要落成泛泛而谈的章节概括。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+来源模式：${input.sourceKind}
+
+${editorialStyleGuide}
+
+正文摘要：
+${String(input.content || '').slice(0, 120000)}
+
+补充线索：
+${groundingContext || '无'}
+  `.trim();
+
+  return callSiliconFlow({ prompt, maxTokens: 1600, temperature: 0.25, responseFormat: 'text' });
+}
+
+function buildMapPrompt(input, groundingContext, analysisBrief) {
+  return `
+你现在要把一本书整理成“高质量阅读地图”，风格目标接近成熟的知识地图产品，而不是普通摘要。
+
+输出原则：
+1. 用中文写主要内容。
+2. 先给骨架，再给方法，再给争议与阅读路线。
+3. 不允许目录复述，不允许空泛鸡汤。
+4. 每个区块都要有明确的信息密度和阅读价值。
+5. 输出字段必须完整，数组数量尽量满足下列标准：
+   - overview.cards: 恰好 4 张
+   - knowledgeMap.areas: 4 到 6 个
+   - knowledgeMap.tools: 4 到 6 个
+   - parts: 4 到 6 个
+   - methods.items: 10 到 16 条
+   - timeline: 4 到 6 条
+   - quotes: 4 到 6 条
+   - debates: 2 到 4 条
+   - routes: 3 到 4 条
+6. 如果是 title-only 模式，也要尽量利用补充线索把书讲深，但不要假造无法支撑的细节。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+来源模式：${input.sourceKind}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+原始文本：
+${String(input.content || '').slice(0, 120000)}
+
+返回 JSON，结构如下：
+{
+  "title": "书名",
+  "author": "作者",
+  "cover": "https://...",
+  "oneLiner": { "zh": "一句话结论", "en": "..." },
+  "about": { "zh": "这本书到底在讲什么", "en": "..." },
+  "stats": { "structure": 4, "volume": 280 },
+  "readingPosition": { "zh": "怎么读这本书" },
+  "overview": {
+    "title": "总览标题",
+    "subtitle": "总览副标题",
+    "cards": [
+      { "layer": "第一层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-orange-500 to-amber-500" }
+    ]
+  },
+  "knowledgeMap": {
+    "areas": [
+      { "title": "领域", "status": "状态", "progress": 80, "color": "bg-orange-500", "desc": "描述" }
+    ],
+    "tools": [
+      { "title": "工具", "desc": "描述", "points": ["点1", "点2", "点3"] }
+    ]
+  },
+  "parts": [
+    {
+      "id": "part-1",
+      "title": "模块名",
+      "subtitle": "第一部分",
+      "navDesc": "导航描述",
+      "intro": "模块介绍",
+      "tags": ["标签1", "标签2"],
+      "task": "这一部分的任务",
+      "takeaways": ["要点1", "要点2"],
+      "chapters": ["章节1", "章节2"],
+      "position": "怎么理解它的位置"
+    }
+  ],
+  "methods": {
+    "categories": ["分类1", "分类2", "分类3"],
+    "items": [
+      { "id": "01", "category": "分类1", "title": "方法名", "desc": "方法描述" }
+    ]
+  },
+  "timeline": [
+    { "year": "阶段", "title": "标题", "desc": "描述" }
+  ],
+  "quotes": [
+    { "quote": "关键句或关键判断", "note": "为什么重要" }
+  ],
+  "debates": [
+    { "title": "争议点", "value": "值得带走", "reservation": "需要保留看" }
+  ],
+  "routes": [
+    { "audience": "读者类型", "route": "阅读路线", "focus": ["重点1", "重点2"] }
+  ]
+}
+  `.trim();
+}
+
+function buildMetaPrompt(input, groundingContext, analysisBrief) {
+  return `
+你现在是阅读地图总编辑。请先只生成这本书的“阅读入口层”，不要输出知识地图、模块、方法、时间线等其它区块。
+
+目标：
+1. 让读者一进来就知道这本书真正讲什么。
+2. 语言要像成熟阅读产品，不像普通摘要。
+3. 如果是 title-only 模式，可以依据补充线索做稳健概括，但不要假造细碎章节。
+4. 一句话结论要有判断，不要只是“本书探讨了……”。
+
+只返回 JSON：
+{
+  "title": "书名",
+  "author": "作者",
+  "cover": "https://...",
+  "oneLiner": { "zh": "一句话结论", "en": "optional" },
+  "about": { "zh": "这本书到底在讲什么", "en": "optional" },
+  "stats": { "structure": 4, "volume": 280 },
+  "readingPosition": { "zh": "这本书应该怎么读" },
+  "overview": {
+    "title": "总览标题",
+    "subtitle": "总览副标题",
+    "cards": [
+      { "layer": "第一层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-orange-500 to-amber-500" },
+      { "layer": "第二层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-sky-500 to-cyan-500" },
+      { "layer": "第三层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-emerald-500 to-teal-500" },
+      { "layer": "第四层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-fuchsia-500 to-pink-500" }
+    ]
+  }
+}
+
+要求：
+- overview.cards 必须恰好 4 张。
+- about.zh 要讲清楚“这本书在处理什么问题”和“读者真正该带走什么”。
+- readingPosition.zh 要给出阅读建议，而不是重复简介。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+来源模式：${input.sourceKind}
+
+${editorialStyleGuide}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+原始文本：
+${String(input.content || '').slice(0, 60000)}
+  `.trim();
+}
+
+function buildStructurePrompt(input, groundingContext, analysisBrief) {
+  return `
+你现在负责这本书阅读地图的“骨架层”。不要写概述，不要写介绍文案，只输出知识地图、模块结构和方法卡。
+
+只返回 JSON：
+{
+  "knowledgeMap": {
+    "areas": [
+      { "title": "领域", "status": "状态", "progress": 80, "color": "bg-orange-500", "desc": "描述" }
+    ],
+    "tools": [
+      { "title": "工具", "desc": "描述", "points": ["点1", "点2", "点3"] }
+    ]
+  },
+  "parts": [
+    {
+      "id": "part-1",
+      "title": "模块名",
+      "subtitle": "第一部分",
+      "navDesc": "导航描述",
+      "intro": "模块介绍",
+      "tags": ["标签1", "标签2"],
+      "task": "这一部分的任务",
+      "takeaways": ["要点1", "要点2"],
+      "chapters": ["章节1", "章节2"],
+      "position": "怎么理解它的位置"
+    }
+  ],
+  "methods": {
+    "categories": ["分类1", "分类2", "分类3"],
+    "items": [
+      { "id": "01", "category": "分类1", "title": "方法名", "desc": "方法描述" }
+    ]
+  }
+}
+
+要求：
+- knowledgeMap.areas 输出 4 到 6 个关键领域。
+- knowledgeMap.tools 输出 4 到 6 个思考工具或判断框架。
+- parts 输出 4 到 6 个模块，要体现“怎么读”，不是目录复述。
+- methods.items 输出 10 到 14 条方法卡。
+- 每一条方法卡都要可操作，不能只是观点标题。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+来源模式：${input.sourceKind}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+原始文本：
+${String(input.content || '').slice(0, 90000)}
+  `.trim();
+}
+
+function buildKnowledgePrompt(input, groundingContext, analysisBrief) {
+  return `
+你现在只负责输出这本书阅读地图里的 knowledgeMap，不要输出任何其它字段。
+
+只返回 JSON：
+{
+  "knowledgeMap": {
+    "areas": [
+      { "title": "领域", "status": "状态", "progress": 80, "color": "bg-orange-500", "desc": "描述" }
+    ],
+    "tools": [
+      { "title": "工具", "desc": "描述", "points": ["点1", "点2", "点3"] }
+    ]
+  }
+}
+
+要求：
+- knowledgeMap.areas 输出 4 到 6 个关键领域。
+- knowledgeMap.tools 输出 4 到 6 个思考工具或判断框架。
+- 每个 desc 都要具体说明这一领域或工具为什么重要。
+- 领域名称不要只是学科名，要更接近作者真正处理的问题块。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+来源模式：${input.sourceKind}
+
+${editorialStyleGuide}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+原始文本：
+${String(input.content || '').slice(0, 60000)}
+  `.trim();
+}
+
+function buildPartsPrompt(input, groundingContext, analysisBrief) {
+  return `
+你现在只负责输出这本书阅读地图里的 parts，不要输出任何其它字段。
+
+只返回 JSON：
+{
+  "parts": [
+    {
+      "id": "part-1",
+      "title": "模块名",
+      "subtitle": "第一部分",
+      "navDesc": "导航描述",
+      "intro": "模块介绍",
+      "tags": ["标签1", "标签2"],
+      "task": "这一部分的任务",
+      "takeaways": ["要点1", "要点2"],
+      "chapters": ["章节1", "章节2"],
+      "position": "怎么理解它的位置"
+    }
+  ]
+}
+
+要求：
+- parts 输出 4 到 6 个模块。
+- 这不是目录复述，而是“读者该怎么理解这部分”。
+- 每个模块都必须写出任务、带走什么、和它在整本书中的位置。
+- title 和 navDesc 要体现阅读视角，不要只是主题名。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+来源模式：${input.sourceKind}
+
+${editorialStyleGuide}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+原始文本：
+${String(input.content || '').slice(0, 70000)}
+  `.trim();
+}
+
+function buildMethodsPrompt(input, groundingContext, analysisBrief) {
+  return `
+你现在只负责输出这本书阅读地图里的 methods，不要输出任何其它字段。
+
+只返回 JSON：
+{
+  "methods": {
+    "categories": ["分类1", "分类2", "分类3"],
+    "items": [
+      { "id": "01", "category": "分类1", "title": "方法名", "desc": "方法描述" }
+    ]
+  }
+}
+
+要求：
+- methods.categories 输出 3 到 5 个分类。
+- methods.items 输出 10 到 14 条方法卡。
+- 每条方法卡都要写成可迁移的判断、工具或行动方式，不要写空泛观点。
+- category 必须来自 categories 列表。
+- 优先提炼“判断框架、观察角度、分析动作”，少写口号。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+来源模式：${input.sourceKind}
+
+${editorialStyleGuide}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+原始文本：
+${String(input.content || '').slice(0, 70000)}
+  `.trim();
+}
+
+function buildSynthesisPrompt(input, groundingContext, analysisBrief) {
+  return `
+你现在负责这本书阅读地图的“收束层”。不要重写总览和模块，只输出时间线、关键句、争议边界和阅读路线。
+
+只返回 JSON：
+{
+  "timeline": [
+    { "year": "阶段", "title": "标题", "desc": "描述" }
+  ],
+  "quotes": [
+    { "quote": "关键句或关键判断", "note": "为什么重要" }
+  ],
+  "debates": [
+    { "title": "争议点", "value": "值得带走", "reservation": "需要保留看" }
+  ],
+  "routes": [
+    { "audience": "读者类型", "route": "阅读路线", "focus": ["重点1", "重点2"] }
+  ]
+}
+
+要求：
+- timeline 输出 4 到 6 条，优先展示问题演化、作者论证推进或现实阶段。
+- quotes 输出 4 到 6 条，允许是高度贴近原意的关键判断，不必强行逐字引用。
+- debates 输出 2 到 4 条，必须写出价值与保留。
+- routes 输出 3 到 4 条，针对不同读者给出清晰阅读入口。
+- quote 优先选“能代表作者判断”的句子，不要写空洞正确话。
+- 如果补充线索里提供了“候选原句”，优先使用这些短句作为 quote，尽量保留原始措辞。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+来源模式：${input.sourceKind}
+
+${editorialStyleGuide}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+原始文本：
+${String(input.content || '').slice(0, 60000)}
+  `.trim();
+}
+
+async function buildReadingMapBySections(input, groundingContext, analysisBrief) {
+  const merged = {};
+  const sections = [
+    { key: 'meta', prompt: buildMetaPrompt(input, groundingContext, analysisBrief), maxTokens: 1200, temperature: 0.3 },
+    { key: 'knowledge', prompt: buildKnowledgePrompt(input, groundingContext, analysisBrief), maxTokens: 1100, temperature: 0.25 },
+    { key: 'parts', prompt: buildPartsPrompt(input, groundingContext, analysisBrief), maxTokens: 1400, temperature: 0.25 },
+    { key: 'methods', prompt: buildMethodsPrompt(input, groundingContext, analysisBrief), maxTokens: 1200, temperature: 0.25 },
+    { key: 'synthesis', prompt: buildSynthesisPrompt(input, groundingContext, analysisBrief), maxTokens: 1200, temperature: 0.25 },
+  ];
+
+  for (const section of sections) {
+    try {
+      const partial = await callSiliconFlow({
+        prompt: section.prompt,
+        maxTokens: section.maxTokens,
+        temperature: section.temperature,
+        responseFormat: 'json_object',
+      });
+      Object.assign(merged, partial);
+    } catch (error) {
+      console.warn(`Map section generation failed for ${section.key}.`, error);
+    }
+  }
+
+  if (!Object.keys(merged).length) {
+    throw new Error('All map section generations failed.');
+  }
+
+  return merged;
+}
+
+app.get('/api/health', (_request, response) => {
+  response.json({
+    ok: true,
+    provider: SILICONFLOW_API_KEY ? 'siliconflow' : 'prototype-fallback',
+    model: SILICONFLOW_MODEL,
+    tavily: Boolean(TAVILY_API_KEY),
+  });
+});
+
+app.get('/api/search-books', async (request, response) => {
+  const query = String(request.query.q || '').trim();
+
+  if (!query) {
+    response.json({ results: libraryMaps });
+    return;
+  }
+
+  try {
+    const localMatches = searchLocalLibrary(query);
+    const [googleResults, openLibraryResults] = await Promise.all([
+      searchGoogleBooks(query, 5).catch(() => []),
+      searchOpenLibrary(query, 5).catch(() => []),
+    ]);
+    const googleCandidates = buildGoogleCandidates(query, googleResults);
+    const openLibraryCandidates = buildOpenLibraryCandidates(query, openLibraryResults);
+    const results = mergeSearchCandidates(query, [...localMatches, ...googleCandidates, ...openLibraryCandidates], []);
+
+    response.json({ results });
+  } catch (error) {
+    console.error('Search pipeline failed, falling back to local library only.', error);
+    response.json({ results: searchLocalLibrary(query) });
+  }
+});
+
+app.post('/api/generate-map', async (request, response) => {
+  const input = request.body || {};
+  if (!input.title) {
+    response.status(400).json({ error: 'Missing required field: title' });
+    return;
+  }
+
+  if (!SILICONFLOW_API_KEY) {
+    const map = buildPrototypeMap(input);
+    response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
+    return;
+  }
+
+  try {
+    const groundingContext = await buildGroundingContext(input);
+    const useDeepAnalysisStage = Boolean(input.content && String(input.content).length > 4000);
+    const analysisBrief = useDeepAnalysisStage || input.sourceKind === 'catalog'
+      ? await buildAnalysisBrief(input, groundingContext)
+      : '';
+    const raw = await buildReadingMapBySections(input, groundingContext, analysisBrief);
+    const editorialRaw = await enrichEditorialDepth(input, groundingContext, analysisBrief, raw);
+    const map = normalizeGeneratedMap(editorialRaw, input);
+    map.cover = await resolveBookCover(map.title, map.author, map.cover);
+    response.json({ map, provider: 'siliconflow', mode: map.sourceMeta.mode });
+  } catch (error) {
+    console.error('SiliconFlow generation failed, falling back.', error);
+    const map = buildPrototypeMap(input);
+    map.cover = await resolveBookCover(map.title, map.author, map.cover);
+    response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
+  }
+});
+
+app.post('/api/translate-map', async (request, response) => {
+  const inputMap = request.body?.map;
+  if (!inputMap) {
+    response.status(400).json({ error: 'Missing required field: map' });
+    return;
+  }
+
+  try {
+    const map = await translateMapToEnglish(inputMap);
+    response.json({ map });
+  } catch (error) {
+    console.error('Map translation failed.', error);
+    response.status(500).json({ error: 'Map translation failed.' });
+  }
+});
+
+const distDir = path.join(__dirname, 'dist');
+if (existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get('*', (request, response, next) => {
+    if (request.path.startsWith('/api/')) {
+      next();
+      return;
+    }
+    response.sendFile(path.join(distDir, 'index.html'));
+  });
+}
+
+app.listen(PORT, () => {
+  console.log(`Lanren Read API listening on http://localhost:${PORT}`);
+});
