@@ -14,6 +14,7 @@ const PORT = Number(process.env.PORT || 8787);
 const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY || process.env.GEMINI_API_KEY || '';
 const SILICONFLOW_BASE_URL = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1';
 const SILICONFLOW_MODEL = process.env.SILICONFLOW_MODEL || 'Qwen/Qwen3-32B';
+const SILICONFLOW_POLISH_MODEL = process.env.SILICONFLOW_POLISH_MODEL || SILICONFLOW_MODEL;
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
 const TAVILY_BASE_URL = process.env.TAVILY_BASE_URL || 'https://api.tavily.com/search';
 const GOOGLE_BOOKS_BASE_URL = process.env.GOOGLE_BOOKS_BASE_URL || 'https://www.googleapis.com/books/v1/volumes';
@@ -82,6 +83,13 @@ function tokenize(value) {
     .split(/[\s/,:;!?()[\]{}"'“”‘’.\-]+/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function extractGroundingKeywords(value) {
+  return String(value || '')
+    .split(/[《》:：,，、\/\s]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2);
 }
 
 function toSlug(value) {
@@ -325,17 +333,65 @@ function buildPrototypeMap(input) {
 
 function normalizeGeneratedMap(raw, input) {
   const fallback = buildPrototypeMap(input);
+  const sectionOrdinals = ['第一部分', '第二部分', '第三部分', '第四部分', '第五部分', '第六部分'];
+  const overviewOrdinals = ['第一层', '第二层', '第三层', '第四层'];
+  const normalizedOverview =
+    raw?.overview?.cards?.length >= 4
+      ? {
+          ...raw.overview,
+          cards: raw.overview.cards.slice(0, 4).map((card, index) => ({
+            ...card,
+            layer: overviewOrdinals[index],
+            points: Array.isArray(card?.points) && card.points.length >= 3
+              ? card.points.slice(0, 3)
+              : [`抓住 ${trimText(card?.title) || '这一层'}`, '看清它为何重要', '记住最该带走的判断'],
+          })),
+        }
+      : fallback.overview;
+  const normalizedParts =
+    raw?.parts?.length >= 4
+      ? raw.parts.slice(0, 6).map((part, index) => {
+          const title = trimText(part?.title) || `${input.title} 的关键模块`;
+          const navDesc = trimText(part?.navDesc) || trimText(part?.task) || trimText(part?.intro) || `这一部分最该读的，是 ${title} 到底怎样影响全书判断。`;
+          const intro = trimText(part?.intro) || `${title} 不是普通章节概括，而是这本书里必须先读懂的一段结构。`;
+          const task = trimText(part?.task) || `先搞清 ${title} 在整本书里到底承担什么任务。`;
+          const position = trimText(part?.position) || `把这一部分当作整本书的关键转折点来看。`;
+          const takeaways = Array.isArray(part?.takeaways) && part.takeaways.length >= 3
+            ? part.takeaways.slice(0, 3)
+            : [navDesc, task, position].map((item) => trimText(item)).filter(Boolean).slice(0, 3);
+          const chapters = Array.isArray(part?.chapters) && part.chapters.length >= 3
+            ? part.chapters.slice(0, 4)
+            : takeaways.slice(0, 3);
+          const tags = Array.isArray(part?.tags) && part.tags.length
+            ? part.tags.slice(0, 3)
+            : [title, trimText(part?.subtitle), chapters[0]].filter(Boolean).slice(0, 3);
+
+          return {
+            ...part,
+            id: part?.id || `part-${index + 1}`,
+            title,
+            subtitle: trimText(part?.subtitle) || sectionOrdinals[index] || `第${index + 1}部分`,
+            navDesc,
+            intro,
+            tags,
+            task,
+            takeaways,
+            chapters,
+            position,
+          };
+        })
+      : fallback.parts;
   return {
     ...fallback,
     ...raw,
-    overview: raw?.overview?.cards?.length >= 4 ? raw.overview : fallback.overview,
+    overview: normalizedOverview,
     knowledgeMap:
       raw?.knowledgeMap?.areas?.length >= 4 && raw?.knowledgeMap?.tools?.length >= 3
         ? raw.knowledgeMap
         : fallback.knowledgeMap,
-    parts: raw?.parts?.length >= 4 ? raw.parts : fallback.parts,
+    parts: normalizedParts,
     methods:
-      raw?.methods?.items?.length >= 10 && raw?.methods?.categories?.length >= 3
+      raw?.methods?.items?.length >= 12 && raw?.methods?.categories?.length >= 3
         ? raw.methods
         : fallback.methods,
     timeline: raw?.timeline?.length >= 4 ? raw.timeline : fallback.timeline,
@@ -372,7 +428,7 @@ function buildEnrichmentPrompt(input, groundingContext, analysisBrief, currentMa
    - knowledgeMap.areas: 4 到 6 个
    - knowledgeMap.tools: 4 到 6 个
    - parts: 4 到 6 个
-   - methods.items: 10 到 14 条
+   - methods.items: 14 到 18 条
    - timeline: 4 到 6 条
    - quotes: 4 到 6 条
    - debates: 2 到 4 条
@@ -380,6 +436,9 @@ function buildEnrichmentPrompt(input, groundingContext, analysisBrief, currentMa
 
 书名：${input.title}
 作者：${input.author || 'Unknown'}
+
+${editorialStyleGuide}
+${benchmarkDensityGuide}
 
 内容架构草稿：
 ${analysisBrief || '无'}
@@ -450,7 +509,7 @@ function extendMethodsFallback(currentMap) {
 
   const pushMethod = (category, title, desc) => {
     const key = normalize(`${category}-${title}`);
-    if (!title || seen.has(key) || baseItems.length >= 14) {
+    if (!title || seen.has(key) || baseItems.length >= 16) {
       return;
     }
     seen.add(key);
@@ -481,8 +540,297 @@ function extendMethodsFallback(currentMap) {
 
   return {
     categories: categories.slice(0, 6),
-    items: renumberMethodItems(baseItems.slice(0, 14)),
+    items: renumberMethodItems(baseItems.slice(0, 16)),
   };
+}
+
+const genericPartTitlePattern = /^(背景|导论|结论|总结|问题定义|结构展开|方法提炼|阅读路线|主要内容|核心观点|政策分析|历史背景|总体介绍|基本情况|社会矛盾|治理策略|经济发展|发展阶段|制度分析)(中|的|与|及|：|:)?/;
+const genericMethodTitlePattern = /^(方法|策略|框架|路径|机制|判断|分析|观察|治理|平衡|重构|优化|理解)(论|法|性)?$/;
+const genericQuotePattern = /(本书|这本书|作者认为|作者指出|演示版|已生成|值得一读|非常重要|需要关注)/;
+const possibleOffTopicEntityPattern = /(俄罗斯|格鲁吉亚|乌克兰|欧盟|美国|日本|韩国|苏联|中东|北约)/;
+
+function trimText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function isGenericPartTitle(title) {
+  const cleaned = trimText(title);
+  return cleaned.length < 4 || cleaned.includes('标题') || cleaned.includes('模块') || genericPartTitlePattern.test(cleaned);
+}
+
+function isWeakMethodItem(item) {
+  const title = trimText(item?.title);
+  const desc = trimText(item?.desc);
+  return !title || !desc || title.length < 4 || title.includes('方法') || desc.length < 22 || genericMethodTitlePattern.test(title);
+}
+
+function isWeakOverviewCard(card) {
+  const title = trimText(card?.title);
+  const desc = trimText(card?.desc);
+  const points = Array.isArray(card?.points) ? card.points.filter(Boolean) : [];
+  return !title || !desc || isGenericPartTitle(title) || desc.length < 26 || points.length < 3;
+}
+
+function isWeakPartItem(part) {
+  const navDesc = trimText(part?.navDesc);
+  const task = trimText(part?.task);
+  const position = trimText(part?.position);
+  const intro = trimText(part?.intro);
+  return (
+    isGenericPartTitle(part?.title) ||
+    navDesc.length < 18 ||
+    task.length < 18 ||
+    position.length < 18 ||
+    intro.length < 40 ||
+    !Array.isArray(part?.takeaways) || part.takeaways.length < 3 ||
+    !Array.isArray(part?.chapters) || part.chapters.length < 3
+  );
+}
+
+function isWeakQuoteItem(item) {
+  const quote = trimText(item?.quote);
+  const note = trimText(item?.note);
+  return !quote || quote.length < 8 || quote.length > 42 || quote.includes('关键句') || genericQuotePattern.test(quote) || note.length < 10;
+}
+
+function collectQualityIssues(map) {
+  const issues = [];
+  const weakPartTitles = (map?.parts || []).map((item) => item?.title).filter((title) => isGenericPartTitle(title));
+  const weakPartCount = (map?.parts || []).filter((item) => isWeakPartItem(item)).length;
+  const weakMethodCount = (map?.methods?.items || []).filter((item) => isWeakMethodItem(item)).length;
+  const weakQuoteCount = (map?.quotes || []).filter((item) => isWeakQuoteItem(item)).length;
+  const weakRouteCount = (map?.routes || []).filter((item) => !trimText(item?.route) || !Array.isArray(item?.focus) || item.focus.length < 2).length;
+  const weakDebateCount = (map?.debates || []).filter((item) => trimText(item?.value).length < 12 || trimText(item?.reservation).length < 12).length;
+  const weakOverviewCount = (map?.overview?.cards || []).filter((card) => isWeakOverviewCard(card)).length;
+  const invalidOverviewLayerCount = (map?.overview?.cards || []).filter((card, index) => trimText(card?.layer) !== ['第一层', '第二层', '第三层', '第四层'][index]).length;
+  const overviewPlaceholder = /总览标题|总览副标题|标题|副标题/.test(trimText(map?.overview?.title)) || /总览标题|总览副标题|标题|副标题/.test(trimText(map?.overview?.subtitle));
+  const weakKnowledgeCount =
+    !map?.knowledgeMap?.areas || map.knowledgeMap.areas.length < 4 ||
+    !map?.knowledgeMap?.tools || map.knowledgeMap.tools.length < 4
+      ? 1
+      : (map.knowledgeMap.tools || []).filter((item) => trimText(item?.desc).length < 14).length;
+
+  if (weakOverviewCount > 0 || invalidOverviewLayerCount > 0 || overviewPlaceholder || trimText(map?.oneLiner?.zh).length < 20 || trimText(map?.about?.zh).length < 60) {
+    issues.push(`入口层偏弱：一句话结论或 overview 还不够像成熟阅读产品，存在占位或泛标题。overview 弱卡片数 ${weakOverviewCount}。`);
+  }
+  if (weakKnowledgeCount > 0) {
+    issues.push(`知识地图偏弱：关键领域或思维工具不够具体，当前工具数量 ${map?.knowledgeMap?.tools?.length || 0}。`);
+  }
+  if (weakPartTitles.length > 0 || weakPartCount > 0) {
+    issues.push(`模块层偏弱：${weakPartTitles.slice(0, 4).join(' / ') || '存在泛标题'}。需要改成带判断的阅读模块名，并把 navDesc、task、position 写得更像“为什么读这一部分”。`);
+  }
+  if (!map?.methods?.items || map.methods.items.length < 14 || weakMethodCount > 3) {
+    issues.push(`方法卡不足或不够硬：当前 ${map?.methods?.items?.length || 0} 条，其中较弱 ${weakMethodCount} 条。`);
+  }
+  if (!map?.quotes || map.quotes.length < 5 || weakQuoteCount > 2) {
+    issues.push(`关键句不够像可摘记原句：当前 ${map?.quotes?.length || 0} 条，其中较弱 ${weakQuoteCount} 条。`);
+  }
+  if (!map?.routes || map.routes.length < 3 || weakRouteCount > 0) {
+    issues.push(`阅读路线不够清晰：当前 ${map?.routes?.length || 0} 条，其中较弱 ${weakRouteCount} 条。`);
+  }
+  if (!map?.debates || map.debates.length < 2 || weakDebateCount > 0) {
+    issues.push(`争议与边界不够锋利：当前 ${map?.debates?.length || 0} 条，其中较弱 ${weakDebateCount} 条。`);
+  }
+
+  return issues;
+}
+
+function textMatchesQuery(text, input) {
+  const haystack = normalize(text);
+  const keywords = extractGroundingKeywords([input?.title, input?.author].filter(Boolean).join(' ')).map(normalize).filter(Boolean);
+  return keywords.some((keyword) => haystack.includes(keyword));
+}
+
+function isPossiblyOffTopic(text, input) {
+  const cleaned = trimText(text);
+  return possibleOffTopicEntityPattern.test(cleaned) && !textMatchesQuery(cleaned, input);
+}
+
+function removeOffTopicItems(map, input) {
+  return {
+    ...map,
+    timeline: (map?.timeline || []).filter((item) => !isPossiblyOffTopic(`${item?.title || ''} ${item?.desc || ''}`, input)),
+    quotes: (map?.quotes || []).filter((item) => !isPossiblyOffTopic(`${item?.quote || ''} ${item?.note || ''}`, input)),
+    debates: (map?.debates || []).filter((item) => !isPossiblyOffTopic(`${item?.title || ''} ${item?.value || ''} ${item?.reservation || ''}`, input)),
+  };
+}
+
+function buildQualityPolishPrompt(input, groundingContext, analysisBrief, currentMap, issues) {
+  return `
+你现在是“阅读地图主编”，负责最后一轮审稿和定向重写。
+
+目标：
+1. 让结果更接近高质量 reading-map skill，而不是结构化摘要。
+2. 只重写薄弱区块，不要把整张地图改散。
+3. 标题必须有编辑判断，不要泛泛复述主题。
+4. 方法卡必须像可迁移的判断工具。
+5. 关键句必须像能被读者摘记的硬句，不要写成说明句。
+6. 禁止引入与这本书无直接关联的外国案例、书外事件或噪音实体，除非补充线索明确支持。
+
+当前审稿意见：
+${issues.map((item, index) => `${index + 1}. ${item}`).join('\n')}
+
+请只返回 JSON，允许补这些字段：
+{
+  "oneLiner": { "zh": "一句话结论" },
+  "about": { "zh": "这本书到底在讲什么" },
+  "readingPosition": { "zh": "怎么读这本书" },
+  "knowledgeMap": {
+    "areas": [
+      { "title": "领域", "status": "状态", "progress": 80, "color": "bg-orange-500", "desc": "描述" }
+    ],
+    "tools": [
+      { "title": "工具", "desc": "描述", "points": ["点1", "点2", "点3"] }
+    ]
+  },
+  "overview": {
+    "title": "总览标题",
+    "subtitle": "总览副标题",
+    "cards": [
+      { "layer": "第一层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-orange-500 to-amber-500" }
+    ]
+  },
+  "parts": [
+    {
+      "id": "part-1",
+      "title": "模块名",
+      "subtitle": "第一部分",
+      "navDesc": "导航描述",
+      "intro": "模块介绍",
+      "tags": ["标签1", "标签2"],
+      "task": "这一部分的任务",
+      "takeaways": ["要点1", "要点2"],
+      "chapters": ["章节1", "章节2"],
+      "position": "怎么理解它的位置"
+    }
+  ],
+  "quotes": [
+    { "quote": "关键句", "note": "为什么重要" }
+  ],
+  "debates": [
+    { "title": "争议点", "value": "值得带走", "reservation": "需要保留看" }
+  ],
+  "routes": [
+    { "audience": "读者类型", "route": "阅读路线", "focus": ["重点1", "重点2"] }
+  ]
+}
+
+硬性要求：
+- overview.cards 的 layer 固定写“第一层 / 第二层 / 第三层 / 第四层”，真正的判断句写在 title。
+- parts 保持 4 到 6 个，但把标题改成更有判断的名字。
+- parts.subtitle 固定写“第一部分 / 第二部分 ...”。
+- knowledgeMap.tools 至少 4 个，且要更像作者在这本书里真正提供的观察工具。
+- quotes 目标 5 到 8 条，优先使用补充线索里的候选原句或高度贴近原意的关键判断。
+- routes 保持 3 到 4 条，focus 每条至少 2 个点。
+- debates 每条都要写清“为什么今天仍值得带走”和“为什么还要保留看”。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+
+${editorialStyleGuide}
+${benchmarkDensityGuide}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+当前地图：
+${JSON.stringify(currentMap).slice(0, 14000)}
+  `.trim();
+}
+
+async function polishMapQuality(input, groundingContext, analysisBrief, currentMap) {
+  const issues = collectQualityIssues(currentMap);
+  const possibleNoise = [
+    ...(currentMap?.timeline || []).map((item) => `${item?.title || ''} ${item?.desc || ''}`),
+    ...(currentMap?.quotes || []).map((item) => `${item?.quote || ''} ${item?.note || ''}`),
+  ].filter((item) => isPossiblyOffTopic(item, input));
+  if (possibleNoise.length > 0) {
+    issues.push(`出现可能不相关的书外案例或实体：${possibleNoise.slice(0, 3).join(' / ')}。请删掉这些噪音。`);
+  }
+  if (issues.length === 0) {
+    return removeOffTopicItems(currentMap, input);
+  }
+
+  try {
+    const polished = await callSiliconFlow({
+      prompt: buildQualityPolishPrompt(input, groundingContext, analysisBrief, currentMap, issues),
+      maxTokens: 2200,
+      temperature: 0.2,
+      model: SILICONFLOW_POLISH_MODEL,
+      responseFormat: 'json_object',
+    });
+
+    return removeOffTopicItems({
+      ...currentMap,
+      oneLiner: polished?.oneLiner?.zh ? polished.oneLiner : currentMap.oneLiner,
+      about: polished?.about?.zh ? polished.about : currentMap.about,
+      readingPosition: polished?.readingPosition?.zh ? polished.readingPosition : currentMap.readingPosition,
+      knowledgeMap:
+        polished?.knowledgeMap?.areas?.length >= 4 && polished?.knowledgeMap?.tools?.length >= 4
+          ? polished.knowledgeMap
+          : currentMap.knowledgeMap,
+      overview: polished?.overview?.cards?.length >= 4 ? polished.overview : currentMap.overview,
+      parts: Array.isArray(polished?.parts) && polished.parts.length >= 4 ? polished.parts : currentMap.parts,
+      quotes: Array.isArray(polished?.quotes) && polished.quotes.length >= 4 ? polished.quotes.slice(0, 8) : currentMap.quotes,
+      debates: Array.isArray(polished?.debates) && polished.debates.length >= 2 ? polished.debates : currentMap.debates,
+      routes: Array.isArray(polished?.routes) && polished.routes.length >= 3 ? polished.routes : currentMap.routes,
+    }, input);
+  } catch (error) {
+    console.warn('Quality polish failed, keeping current map.', error);
+    return removeOffTopicItems(currentMap, input);
+  }
+}
+
+function buildOverviewPolishPrompt(input, groundingContext, analysisBrief, currentMap) {
+  return `
+你现在只负责重写这本书阅读地图的入口层，不要输出其它字段。
+
+只返回 JSON：
+{
+  "oneLiner": { "zh": "一句话结论" },
+  "about": { "zh": "这本书到底在处理什么问题，真正该带走什么" },
+  "readingPosition": { "zh": "最有效的阅读方式" },
+  "overview": {
+    "title": "总览标题",
+    "subtitle": "总览副标题",
+    "cards": [
+      { "layer": "第一层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-orange-500 to-amber-500" }
+    ]
+  }
+}
+
+要求：
+- oneLiner 要像编辑下判断，优先用“不是 X，而是 Y”“真正要读的不是 A，而是 B”这种压缩句式。
+- about 要回答两件事：这本书真正处理什么问题；读者该带走什么，不要写成普通简介。
+- readingPosition 要像阅读建议，不重复 about。
+- overview.cards 必须恰好 4 张，并且形成递进链，不要四个并列标签。
+- 四张卡的 title 优先使用动作性结构，例如“先…… / 再…… / 把…… / 最后……”。
+- 每张卡必须有 3 个 points，每个 point 都要短、硬、可带走。
+
+${editorialStyleGuide}
+
+${benchmarkDensityGuide}
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+当前入口层：
+${JSON.stringify({
+  oneLiner: currentMap.oneLiner,
+  about: currentMap.about,
+  readingPosition: currentMap.readingPosition,
+  overview: currentMap.overview,
+}).slice(0, 10000)}
+  `.trim();
 }
 
 function buildMethodsBoosterPrompt(input, groundingContext, analysisBrief, currentMap) {
@@ -500,7 +848,7 @@ function buildMethodsBoosterPrompt(input, groundingContext, analysisBrief, curre
 }
 
 要求：
-- 目标是 12 到 16 条方法卡。
+- 目标是 16 到 18 条方法卡。
 - 不要重复当前已有方法卡。
 - 方法卡要像“判断工具、分析动作、识别框架”，不是概念复述。
 - 如果当前地图已有不错的方法卡，可以保留并补足。
@@ -509,6 +857,7 @@ function buildMethodsBoosterPrompt(input, groundingContext, analysisBrief, curre
 作者：${input.author || 'Unknown'}
 
 ${editorialStyleGuide}
+${benchmarkDensityGuide}
 
 内容架构草稿：
 ${analysisBrief || '无'}
@@ -518,6 +867,93 @@ ${groundingContext || '无'}
 
 当前地图：
 ${JSON.stringify({ methods: currentMap.methods, knowledgeMap: currentMap.knowledgeMap, parts: currentMap.parts }).slice(0, 10000)}
+  `.trim();
+}
+
+function buildPartPolishPrompt(input, groundingContext, analysisBrief, currentMap) {
+  return `
+你现在只负责重写这本书阅读地图里的 parts，让模块名、导航说明和任务更像成熟阅读产品。
+
+只返回 JSON：
+{
+  "parts": [
+    {
+      "id": "part-1",
+      "title": "更锋利的模块名",
+      "subtitle": "第一部分",
+      "navDesc": "导航描述",
+      "intro": "模块介绍",
+      "tags": ["标签1", "标签2"],
+      "task": "这一部分的任务",
+      "takeaways": ["要点1", "要点2"],
+      "chapters": ["章节1", "章节2"],
+      "position": "怎么理解它的位置"
+    }
+  ]
+}
+
+要求：
+- 保持 4 到 6 个模块。
+- title 必须带判断，不要只是主题名。
+- subtitle 固定写“第一部分 / 第二部分 ...”。
+- navDesc 要像“这一部分为什么值得读”，不能只是内容摘要。
+- task 要像读者在这部分真正要完成的认知动作。
+- 可以保留原有 chapters 和大结构，但把表达打磨得更锋利。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+
+${editorialStyleGuide}
+${benchmarkDensityGuide}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+当前 parts：
+${JSON.stringify(currentMap.parts).slice(0, 10000)}
+  `.trim();
+}
+
+function buildWeakMethodsPolishPrompt(input, groundingContext, analysisBrief, currentMap, weakMethods) {
+  return `
+你现在只负责重写阅读地图里较弱的 methods 条目，不要输出其它字段。
+
+只返回 JSON：
+{
+  "methods": {
+    "categories": ["分类1", "分类2", "分类3"],
+    "items": [
+      { "id": "01", "category": "分类1", "title": "更像判断工具的名字", "desc": "更具体的描述" }
+    ]
+  }
+}
+
+要求：
+- 只重写这几条较弱的方法卡，但返回时可包含整组 methods.items。
+- title 不能像概念标签，要像读者能拿走的判断动作。
+- desc 要解释“怎么用”，而不只是“它是什么”。
+- 保持 category 结构稳定。
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+
+${editorialStyleGuide}
+${benchmarkDensityGuide}
+
+内容架构草稿：
+${analysisBrief || '无'}
+
+补充线索：
+${groundingContext || '无'}
+
+当前 methods：
+${JSON.stringify(currentMap.methods).slice(0, 10000)}
+
+较弱条目：
+${JSON.stringify(weakMethods).slice(0, 4000)}
   `.trim();
 }
 
@@ -542,6 +978,7 @@ function buildQuotesBoosterPrompt(input, groundingContext, analysisBrief, curren
 作者：${input.author || 'Unknown'}
 
 ${editorialStyleGuide}
+${benchmarkDensityGuide}
 
 内容架构草稿：
 ${analysisBrief || '无'}
@@ -557,7 +994,30 @@ ${JSON.stringify({ quotes: currentMap.quotes, overview: currentMap.overview, par
 async function enrichEditorialDepth(input, groundingContext, analysisBrief, currentMap) {
   let nextMap = { ...currentMap };
 
-  if (!nextMap?.methods?.items || nextMap.methods.items.length < 12) {
+  const weakOverviewCount = (nextMap?.overview?.cards || []).filter((card) => isWeakOverviewCard(card)).length;
+  const weakPartCount = (nextMap?.parts || []).filter((item) => isWeakPartItem(item)).length;
+
+  if (weakOverviewCount > 0 || trimText(nextMap?.oneLiner?.zh).length < 20 || trimText(nextMap?.about?.zh).length < 60) {
+    try {
+      const polishedOverview = await callSiliconFlow({
+        prompt: buildOverviewPolishPrompt(input, groundingContext, analysisBrief, nextMap),
+        maxTokens: 1200,
+        temperature: 0.2,
+        responseFormat: 'json_object',
+      });
+      nextMap = {
+        ...nextMap,
+        oneLiner: polishedOverview?.oneLiner?.zh ? polishedOverview.oneLiner : nextMap.oneLiner,
+        about: polishedOverview?.about?.zh ? polishedOverview.about : nextMap.about,
+        readingPosition: polishedOverview?.readingPosition?.zh ? polishedOverview.readingPosition : nextMap.readingPosition,
+        overview: polishedOverview?.overview?.cards?.length === 4 ? polishedOverview.overview : nextMap.overview,
+      };
+    } catch (error) {
+      console.warn('Overview polish failed, keeping existing overview.', error);
+    }
+  }
+
+  if (!nextMap?.methods?.items || nextMap.methods.items.length < 14) {
     try {
       const boostedMethods = await callSiliconFlow({
         prompt: buildMethodsBoosterPrompt(input, groundingContext, analysisBrief, nextMap),
@@ -569,7 +1029,7 @@ async function enrichEditorialDepth(input, groundingContext, analysisBrief, curr
       if (Array.isArray(boostedMethods?.methods?.items) && boostedMethods.methods.items.length) {
         nextMap.methods = {
           categories: boostedMethods.methods.categories || nextMap.methods?.categories || [],
-          items: renumberMethodItems(boostedMethods.methods.items.slice(0, 14)),
+          items: renumberMethodItems(boostedMethods.methods.items.slice(0, 16)),
         };
       }
     } catch (error) {
@@ -595,6 +1055,42 @@ async function enrichEditorialDepth(input, groundingContext, analysisBrief, curr
     }
   }
 
+  if (weakPartCount > 1) {
+    try {
+      const polishedParts = await callSiliconFlow({
+        prompt: buildPartPolishPrompt(input, groundingContext, analysisBrief, nextMap),
+        maxTokens: 1400,
+        temperature: 0.2,
+        responseFormat: 'json_object',
+      });
+      if (Array.isArray(polishedParts?.parts) && polishedParts.parts.length >= 4) {
+        nextMap.parts = polishedParts.parts;
+      }
+    } catch (error) {
+      console.warn('Part polish failed, keeping existing parts.', error);
+    }
+  }
+
+  const weakMethods = (nextMap?.methods?.items || []).filter((item) => isWeakMethodItem(item));
+  if (weakMethods.length > 2) {
+    try {
+      const polishedMethods = await callSiliconFlow({
+        prompt: buildWeakMethodsPolishPrompt(input, groundingContext, analysisBrief, nextMap, weakMethods.slice(0, 8)),
+        maxTokens: 1400,
+        temperature: 0.2,
+        responseFormat: 'json_object',
+      });
+      if (Array.isArray(polishedMethods?.methods?.items) && polishedMethods.methods.items.length >= 10) {
+        nextMap.methods = {
+          categories: polishedMethods.methods.categories || nextMap.methods?.categories || [],
+          items: renumberMethodItems(polishedMethods.methods.items.slice(0, 16)),
+        };
+      }
+    } catch (error) {
+      console.warn('Weak methods polish failed, keeping existing methods.', error);
+    }
+  }
+
   return nextMap;
 }
 
@@ -602,7 +1098,7 @@ async function enrichSparseMap(input, groundingContext, analysisBrief, currentMa
   const needsEnrichment =
     !currentMap?.knowledgeMap?.tools || currentMap.knowledgeMap.tools.length < 4 ||
     !currentMap?.parts || currentMap.parts.length < 4 ||
-    !currentMap?.methods?.items || currentMap.methods.items.length < 10 ||
+    !currentMap?.methods?.items || currentMap.methods.items.length < 12 ||
     !currentMap?.quotes || currentMap.quotes.length < 4 ||
     !currentMap?.routes || currentMap.routes.length < 3;
 
@@ -680,10 +1176,28 @@ function extractJsonCandidate(text) {
     }
   }
 
+  const repairedCandidates = candidates.map((candidate) =>
+    String(candidate || '')
+      .replace(/,\s*([}\]])/g, '$1')
+      .replace(/[\u0000-\u0019]+/g, ' ')
+      .trim(),
+  );
+
+  for (const candidate of repairedCandidates) {
+    if (!candidate) {
+      continue;
+    }
+    try {
+      return JSON.parse(candidate);
+    } catch (_error) {
+      continue;
+    }
+  }
+
   throw new SyntaxError(`Unable to parse model JSON. Preview: ${cleaned.slice(0, 240)}`);
 }
 
-async function callSiliconFlow({ prompt, maxTokens = 5000, temperature = 0.35, responseFormat = 'json_object' }) {
+async function callSiliconFlow({ prompt, maxTokens = 5000, temperature = 0.35, responseFormat = 'json_object', model = SILICONFLOW_MODEL }) {
   const response = await fetch(`${SILICONFLOW_BASE_URL}/chat/completions`, {
     method: 'POST',
     signal: AbortSignal.timeout(SILICONFLOW_TIMEOUT_MS),
@@ -692,7 +1206,7 @@ async function callSiliconFlow({ prompt, maxTokens = 5000, temperature = 0.35, r
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: SILICONFLOW_MODEL,
+      model,
       stream: false,
       max_tokens: maxTokens,
       temperature,
@@ -914,6 +1428,17 @@ function mergeTavilyResults(resultGroups) {
   return merged;
 }
 
+function isRelevantGroundingResult(item, query) {
+  const haystack = normalize(`${item?.title || ''} ${item?.content || ''} ${item?.raw_content || ''}`);
+  const keywords = extractGroundingKeywords(query).map(normalize).filter(Boolean);
+  if (!haystack || keywords.length === 0) {
+    return true;
+  }
+
+  const hitCount = keywords.filter((keyword) => haystack.includes(keyword)).length;
+  return hitCount >= 1;
+}
+
 function formatTavilyResults(results) {
   return results
     .map((item, index) => {
@@ -997,10 +1522,35 @@ const editorialStyleGuide = `
    - 它真正解释的不是 X，而是 Y
    - 这部分的重点不在于 A，而在于 B
    - 作者最有力的判断是……
+   - 增长的代价不是别的，而是……
+   - 真正决定结果的不是表面变量，而是……
 4. 方法卡必须像“可迁移的判断工具”，不要写成正确废话。
 5. 争议部分必须写出“为什么值得带走”以及“今天为什么要保留看”。
 6. 如果线索有限，宁可保守，也不要凑概念。
 7. 标题和文案优先追求编辑感、压缩感和可读性，不要堆术语。
+8. 严禁输出占位词，例如“总览标题”“总览副标题”“方法名”“模块名”“关键句”。
+9. 坏标题示例：
+   - 社会矛盾的平衡
+   - 经济发展的社会矛盾
+   - 核心观点
+   好标题示例：
+   - 增长不是一路放大，而是把冲突留在可控区间
+   - 政府不是裁判，而是增长机器的一部分
+   - 真正要读的不是政策表面，而是地方政府怎么做账
+`.trim();
+
+const benchmarkDensityGuide = `
+对标页的内容密度规律：
+1. 入口层不是简介，而是“判断句 + 反转句 + 阅读定位”。
+2. overview 的四张卡必须形成递进，不是四个并列标签。优先使用这类结构：
+   - 先界定什么值得做
+   - 再决定用什么脑子思考
+   - 把组织改造成执行机器
+   - 最后把公司放进更大的长期叙事
+3. parts 不只解释“这一部分讲什么”，还要解释“为什么值得读”和“读完要完成什么认知动作”。
+4. methods 要像短硬的判断动作，例如“先质疑需求”“别优化不该存在的东西”“让系统直接接触真实反馈”。
+5. quotes 要短、稳、能摘记，note 要解释这句话为什么代表整本书的判断核心。
+6. 同一层里要有节奏差异：一句总结、一个判断、三个带走点，而不是统一写成说明文。
 `.trim();
 
 function buildTavilyCandidates(query, tavilyResults) {
@@ -1115,7 +1665,8 @@ async function buildGroundingContext(input) {
       searchTavily(`${query} 目录 章节 框架`, { searchDepth: 'advanced', maxResults: 3 }),
       searchTavily(`${query} 书摘 金句 摘录 摘抄`, { searchDepth: 'advanced', maxResults: 3, includeRawContent: true }),
     ]);
-    const results = mergeTavilyResults([coreResults, structureResults, quoteResults]);
+    const results = mergeTavilyResults([coreResults, structureResults, quoteResults])
+      .filter((item) => isRelevantGroundingResult(item, query));
     if (results.length === 0) {
       return '';
     }
@@ -1148,12 +1699,14 @@ async function buildAnalysisBrief(input, groundingContext) {
 3. 写得像高质量编辑工作笔记，不要写空话。
 4. 如果来源不足，要明确保守，不要硬编。
 5. 模块标题和判断要有编辑压缩感，不要落成泛泛而谈的章节概括。
+6. 入口层和模块层要学习成熟阅读地图的节奏：先给判断，再给“为什么重要”，最后给可带走点。
 
 书名：${input.title}
 作者：${input.author || 'Unknown'}
 来源模式：${input.sourceKind}
 
 ${editorialStyleGuide}
+${benchmarkDensityGuide}
 
 正文摘要：
 ${String(input.content || '').slice(0, 120000)}
@@ -1179,7 +1732,7 @@ function buildMapPrompt(input, groundingContext, analysisBrief) {
    - knowledgeMap.areas: 4 到 6 个
    - knowledgeMap.tools: 4 到 6 个
    - parts: 4 到 6 个
-   - methods.items: 10 到 16 条
+   - methods.items: 14 到 18 条
    - timeline: 4 到 6 条
    - quotes: 4 到 6 条
    - debates: 2 到 4 条
@@ -1282,16 +1835,19 @@ function buildMetaPrompt(input, groundingContext, analysisBrief) {
     "title": "总览标题",
     "subtitle": "总览副标题",
     "cards": [
-      { "layer": "第一层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-orange-500 to-amber-500" },
-      { "layer": "第二层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-sky-500 to-cyan-500" },
-      { "layer": "第三层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-emerald-500 to-teal-500" },
-      { "layer": "第四层", "title": "标题", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-fuchsia-500 to-pink-500" }
+      { "layer": "第一层", "title": "先界定什么值得看", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-orange-500 to-amber-500" },
+      { "layer": "第二层", "title": "再决定用什么框架理解", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-sky-500 to-cyan-500" },
+      { "layer": "第三层", "title": "把关键机制放回同一张图", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-emerald-500 to-teal-500" },
+      { "layer": "第四层", "title": "最后看它留下什么边界", "desc": "描述", "points": ["点1", "点2", "点3"], "color": "from-fuchsia-500 to-pink-500" }
     ]
   }
 }
 
 要求：
 - overview.cards 必须恰好 4 张。
+- 四张卡必须形成清晰递进，不要写成 4 个并列维度。
+- 四张卡 title 优先使用“先…… / 再…… / 把…… / 最后……”这种结构。
+- layer 字段固定写“第一层 / 第二层 / 第三层 / 第四层”，不要把判断句塞进 layer。
 - about.zh 要讲清楚“这本书在处理什么问题”和“读者真正该带走什么”。
 - readingPosition.zh 要给出阅读建议，而不是重复简介。
 
@@ -1300,6 +1856,7 @@ function buildMetaPrompt(input, groundingContext, analysisBrief) {
 来源模式：${input.sourceKind}
 
 ${editorialStyleGuide}
+${benchmarkDensityGuide}
 
 内容架构草稿：
 ${analysisBrief || '无'}
@@ -1352,12 +1909,16 @@ function buildStructurePrompt(input, groundingContext, analysisBrief) {
 - knowledgeMap.areas 输出 4 到 6 个关键领域。
 - knowledgeMap.tools 输出 4 到 6 个思考工具或判断框架。
 - parts 输出 4 到 6 个模块，要体现“怎么读”，不是目录复述。
-- methods.items 输出 10 到 14 条方法卡。
+- methods.items 输出 14 到 18 条方法卡。
 - 每一条方法卡都要可操作，不能只是观点标题。
+- parts 的 navDesc、task、position 要有“为什么值得读这一部分”的阅读感。
+- parts.subtitle 固定写“第一部分 / 第二部分 ...”，不要把判断句写进 subtitle。
 
 书名：${input.title}
 作者：${input.author || 'Unknown'}
 来源模式：${input.sourceKind}
+
+${benchmarkDensityGuide}
 
 内容架构草稿：
 ${analysisBrief || '无'}
@@ -1397,6 +1958,7 @@ function buildKnowledgePrompt(input, groundingContext, analysisBrief) {
 来源模式：${input.sourceKind}
 
 ${editorialStyleGuide}
+${benchmarkDensityGuide}
 
 内容架构草稿：
 ${analysisBrief || '无'}
@@ -1436,12 +1998,16 @@ function buildPartsPrompt(input, groundingContext, analysisBrief) {
 - 这不是目录复述，而是“读者该怎么理解这部分”。
 - 每个模块都必须写出任务、带走什么、和它在整本书中的位置。
 - title 和 navDesc 要体现阅读视角，不要只是主题名。
+- subtitle 固定写“第一部分 / 第二部分 ...”，不要把判断句写进 subtitle。
+- navDesc 要像“为什么这部分值得读”，task 要像读者要完成的认知动作。
+- takeaways 至少 3 条，chapters 至少 3 个，position 要说明它在整本书中的作用。
 
 书名：${input.title}
 作者：${input.author || 'Unknown'}
 来源模式：${input.sourceKind}
 
 ${editorialStyleGuide}
+${benchmarkDensityGuide}
 
 内容架构草稿：
 ${analysisBrief || '无'}
@@ -1470,16 +2036,19 @@ function buildMethodsPrompt(input, groundingContext, analysisBrief) {
 
 要求：
 - methods.categories 输出 3 到 5 个分类。
-- methods.items 输出 10 到 14 条方法卡。
+- methods.items 输出 14 到 18 条方法卡。
 - 每条方法卡都要写成可迁移的判断、工具或行动方式，不要写空泛观点。
 - category 必须来自 categories 列表。
 - 优先提炼“判断框架、观察角度、分析动作”，少写口号。
+- title 优先写成短硬动作句，不要用“某某机制”“某某框架”这类概念名糊弄过去。
+- desc 要回答“这个动作怎么用，为什么在这本书里重要”。
 
 书名：${input.title}
 作者：${input.author || 'Unknown'}
 来源模式：${input.sourceKind}
 
 ${editorialStyleGuide}
+${benchmarkDensityGuide}
 
 内容架构草稿：
 ${analysisBrief || '无'}
@@ -1525,6 +2094,7 @@ function buildSynthesisPrompt(input, groundingContext, analysisBrief) {
 来源模式：${input.sourceKind}
 
 ${editorialStyleGuide}
+${benchmarkDensityGuide}
 
 内容架构草稿：
 ${analysisBrief || '无'}
@@ -1622,8 +2192,13 @@ app.post('/api/generate-map', async (request, response) => {
       ? await buildAnalysisBrief(input, groundingContext)
       : '';
     const raw = await buildReadingMapBySections(input, groundingContext, analysisBrief);
-    const editorialRaw = await enrichEditorialDepth(input, groundingContext, analysisBrief, raw);
-    const map = normalizeGeneratedMap(editorialRaw, input);
+    const shouldRunSparsePass = Boolean(input.content && String(input.content).length > 6000);
+    const enrichedRaw = shouldRunSparsePass
+      ? await enrichSparseMap(input, groundingContext, analysisBrief, raw)
+      : raw;
+    const editorialRaw = await enrichEditorialDepth(input, groundingContext, analysisBrief, enrichedRaw);
+    const polishedRaw = await polishMapQuality(input, groundingContext, analysisBrief, editorialRaw);
+    const map = normalizeGeneratedMap(polishedRaw, input);
     map.cover = await resolveBookCover(map.title, map.author, map.cover);
     response.json({ map, provider: 'siliconflow', mode: map.sourceMeta.mode });
   } catch (error) {
