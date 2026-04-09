@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT || 8787);
+const NODE_ENV = process.env.NODE_ENV || 'development';
 const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY || process.env.GEMINI_API_KEY || '';
 const SILICONFLOW_BASE_URL = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1';
 const SILICONFLOW_MODEL = process.env.SILICONFLOW_MODEL || 'Qwen/Qwen3-32B';
@@ -23,6 +24,9 @@ const SILICONFLOW_TIMEOUT_MS = Number(process.env.SILICONFLOW_TIMEOUT_MS || 9000
 const TAVILY_TIMEOUT_MS = Number(process.env.TAVILY_TIMEOUT_MS || 12000);
 const GOOGLE_BOOKS_TIMEOUT_MS = Number(process.env.GOOGLE_BOOKS_TIMEOUT_MS || 12000);
 const OPEN_LIBRARY_TIMEOUT_MS = Number(process.env.OPEN_LIBRARY_TIMEOUT_MS || 12000);
+const ALLOW_PROTOTYPE_FALLBACK = process.env.ALLOW_PROTOTYPE_FALLBACK
+  ? ['1', 'true', 'yes', 'on'].includes(String(process.env.ALLOW_PROTOTYPE_FALLBACK).toLowerCase())
+  : NODE_ENV !== 'production';
 
 app.use(express.json({ limit: '2mb' }));
 
@@ -329,6 +333,24 @@ function buildPrototypeMap(input) {
         : '当前以书名生成演示版地图，建议后续接入真实检索书源和异步任务流。',
     },
   };
+}
+
+function buildConfigStatus() {
+  return {
+    siliconflowConfigured: Boolean(SILICONFLOW_API_KEY),
+    tavilyConfigured: Boolean(TAVILY_API_KEY),
+    allowPrototypeFallback: ALLOW_PROTOTYPE_FALLBACK,
+    nodeEnv: NODE_ENV,
+  };
+}
+
+function sendGenerationUnavailable(response, detail) {
+  response.status(503).json({
+    error: 'Reading map generation is unavailable.',
+    code: 'GENERATION_UNAVAILABLE',
+    detail,
+    config: buildConfigStatus(),
+  });
 }
 
 function normalizeGeneratedMap(raw, input) {
@@ -2139,11 +2161,13 @@ async function buildReadingMapBySections(input, groundingContext, analysisBrief)
 }
 
 app.get('/api/health', (_request, response) => {
+  const config = buildConfigStatus();
   response.json({
     ok: true,
-    provider: SILICONFLOW_API_KEY ? 'siliconflow' : 'prototype-fallback',
+    provider: config.siliconflowConfigured ? 'siliconflow' : (config.allowPrototypeFallback ? 'prototype-fallback' : 'unconfigured'),
     model: SILICONFLOW_MODEL,
-    tavily: Boolean(TAVILY_API_KEY),
+    tavily: config.tavilyConfigured,
+    config,
   });
 });
 
@@ -2180,6 +2204,10 @@ app.post('/api/generate-map', async (request, response) => {
   }
 
   if (!SILICONFLOW_API_KEY) {
+    if (!ALLOW_PROTOTYPE_FALLBACK) {
+      sendGenerationUnavailable(response, 'SILICONFLOW_API_KEY is missing in the current deployment.');
+      return;
+    }
     const map = buildPrototypeMap(input);
     response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
     return;
@@ -2203,6 +2231,13 @@ app.post('/api/generate-map', async (request, response) => {
     response.json({ map, provider: 'siliconflow', mode: map.sourceMeta.mode });
   } catch (error) {
     console.error('SiliconFlow generation failed, falling back.', error);
+    if (!ALLOW_PROTOTYPE_FALLBACK) {
+      sendGenerationUnavailable(
+        response,
+        error instanceof Error ? error.message : 'SiliconFlow generation failed before a valid reading map was produced.',
+      );
+      return;
+    }
     const map = buildPrototypeMap(input);
     map.cover = await resolveBookCover(map.title, map.author, map.cover);
     response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
