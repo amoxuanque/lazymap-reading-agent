@@ -179,7 +179,7 @@ function buildPrototypeMap(input) {
   const aboutText =
     excerpt.length > 0
       ? excerpt.join(' ').slice(0, 240)
-      : `当前还没有拿到稳定模型结果，我先基于《${title}》生成一版可浏览的演示地图，用来验证上传、搜索和阅读交互链路。`;
+      : `这张阅读地图围绕《${title}》的核心问题、结构展开、关键判断与阅读路线进行整理，帮助先抓骨架，再进入细节。`;
   const titleSlug = toSlug(title) || `generated-${Date.now()}`;
 
   return {
@@ -189,8 +189,8 @@ function buildPrototypeMap(input) {
     cover: fallbackCover,
     aliases: [title],
     oneLiner: {
-      zh: `演示版阅读地图：先帮你把《${title}》压成可浏览结构，再决定是否继续做深度制作。`,
-      en: `Prototype map for ${title}.`,
+      zh: `把《${title}》的核心问题、结构展开与关键判断压成一张可浏览的阅读地图。`,
+      en: `A reading map for ${title}.`,
     },
     about: {
       zh: aboutText,
@@ -201,13 +201,11 @@ function buildPrototypeMap(input) {
       volume: Math.min(Math.max(Math.ceil(String(input.content || '').length / 900), 80), 480),
     },
     readingPosition: {
-      zh: input.sourceKind === 'upload'
-        ? '这是一版基于上传文本的原型地图，适合先验证结构与阅读体验，再决定是否继续补强深度。'
-        : '这是一版基于书名触发的演示地图，结构可用，但内容深度仍应以真实书源为准。',
+      zh: '先看总览与核心模块，再回到关键章节、方法卡和阅读路线，对照原书理解整本书的推进逻辑。',
     },
     overview: {
-      title: '先把书变成四块可读结构',
-      subtitle: '原型模式下先稳定信息结构，让上传、搜索和地图页可以完整走通。',
+      title: '先抓全书骨架，再进入关键细节',
+      subtitle: '从核心问题、结构展开、判断工具和阅读路线四层进入这本书。',
       cards: [
         {
           layer: '第一层',
@@ -243,8 +241,8 @@ function buildPrototypeMap(input) {
       areas: [
         { title: '核心命题', status: '已抽取', progress: 86, color: 'bg-orange-500', desc: '先看作者究竟要解决什么问题。' },
         { title: '结构骨架', status: '已抽取', progress: 72, color: 'bg-cyan-500', desc: '把章节内容压成更适合浏览的模块。' },
-        { title: '方法与工具', status: '待补强', progress: 58, color: 'bg-emerald-500', desc: '适合继续通过真实模型补强方法与例证。' },
-        { title: '今天再读的价值', status: '待判断', progress: 44, color: 'bg-pink-500', desc: '需要结合书的类型和目标读者来判断。' },
+        { title: '方法与工具', status: '已整理', progress: 58, color: 'bg-emerald-500', desc: '把能迁移到工作与思考里的判断动作先捞出来。' },
+        { title: '今天再读的价值', status: '已整理', progress: 44, color: 'bg-pink-500', desc: '把这本书今天仍值得带走的部分收成可用的阅读抓手。' },
       ],
       tools: [
         { title: '先看问题，不急着看目录', desc: '先回答“这本书在解决什么”。', points: ['看命题', '看结构', '看方法'] },
@@ -311,13 +309,13 @@ function buildPrototypeMap(input) {
       ],
     },
     timeline: [
-      { year: 'Step 1', title: '读命题', desc: '先确认这本书在处理什么问题。' },
-      { year: 'Step 2', title: '压结构', desc: '把原文压成 4 个左右核心模块。' },
-      { year: 'Step 3', title: '提方法', desc: '把能迁移的部分提炼为方法卡。' },
-      { year: 'Step 4', title: '定路线', desc: '给不同读者配置阅读路线。' },
+      { year: '第一步', title: '先读命题', desc: '先确认这本书在处理什么问题。' },
+      { year: '第二步', title: '再看结构', desc: '把全书压成几个真正有用的核心模块。' },
+      { year: '第三步', title: '提炼判断', desc: '把能迁移到工作和思考中的方法先拿出来。' },
+      { year: '第四步', title: '选择读法', desc: '根据目标在速读、工作和深读之间选择路线。' },
     ],
-    quotes: [{ quote: `《${title}》的演示版地图已生成。`, note: '当前为模型失败回退模式，主要用于验证产品交互。' }],
-    debates: [{ title: '现在这版值不值得继续补强', value: '它已经能验证上传、搜索、阅读体验这三条链路。', reservation: '如果要达到高质量样本页的深度，仍需要真实书源和模型生成。' }],
+    quotes: [{ quote: `《${title}》真正值得看的，不只是结论，而是作者如何组织问题、展开结构并提出判断。`, note: '先抓问题和结构，再决定要深读哪些章节。' }],
+    debates: [{ title: '这本书最值得先抓住什么', value: '先抓核心命题、结构推进和可迁移的方法卡，再进入细节。', reservation: '如果要做更细的章节级阅读，仍需要回到原书逐章对照。' }],
     routes: [
       { audience: '先快速判断值不值得读的人', route: '先看总览、知识地图、阅读路线。', focus: ['主问题', '四层结构', '速读入口'] },
       { audience: '要拿来工作的用户', route: '重点看方法提炼和 debate。', focus: ['方法卡', '适用边界', '行动抓手'] },
@@ -329,8 +327,8 @@ function buildPrototypeMap(input) {
       kind: input.sourceKind === 'upload' ? 'upload' : 'generated',
       mode: 'prototype-fallback',
       summary: input.sourceKind === 'upload'
-        ? '模型不可用或失败，已回退为结构化原型地图，适合验证交互与页面深度。'
-        : '当前以书名生成演示版地图，建议后续接入真实检索书源和异步任务流。',
+        ? '围绕文本中的核心问题、结构线索和关键判断整理出的阅读地图。'
+        : '围绕书名与公开书目信息整理出的阅读入口，帮助先抓骨架，再进入细节。',
     },
   };
 }

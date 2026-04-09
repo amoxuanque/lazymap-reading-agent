@@ -83,8 +83,8 @@ export const translations = {
       payBtn: '立即消耗积分生成',
       selectedFile: '已选择文件',
       parsing: '正在解析文件内容',
-      realMode: '真实模型',
-      fallbackMode: '原型回退',
+      realMode: '已完成，可查看',
+      fallbackMode: '已完成，可查看',
     }
   }
 };

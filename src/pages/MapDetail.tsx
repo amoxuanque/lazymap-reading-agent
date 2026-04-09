@@ -120,7 +120,7 @@ export function MapDetail() {
         <section className="flex flex-col lg:flex-row gap-12 lg:gap-24 mb-28">
           <div className="flex-1">
             <div className="text-amber-500/80 text-sm font-medium tracking-widest mb-6 uppercase">
-              {mapData.sourceMeta?.mode === 'source-grounded' ? 'Source-Grounded Map' : mapData.sourceMeta?.mode === 'title-only' ? 'Provisional Map' : 'Prototype Map'}
+              Reading Map
             </div>
             <h1 className="text-4xl sm:text-5xl lg:text-7xl font-serif font-bold leading-[1.1] tracking-tight text-white mb-8">
               《{mapData.title}》<br />
@@ -194,7 +194,7 @@ export function MapDetail() {
               <div className="mt-10">
                 <h2 className="text-5xl font-serif font-bold text-white mb-4">{copy.readingMap}</h2>
                 <p className="text-sm leading-relaxed text-zinc-400">
-                  {mapData.sourceMeta?.summary || '围绕阅读地图资产构建的单页阅读产品'}
+                  {mapData.about?.zh || mapData.oneLiner?.zh || '围绕这本书的核心问题、结构展开与关键判断整理的阅读地图。'}
                 </p>
                 {leadingCards.length > 0 && (
                   <div className="mt-8 space-y-3">

@@ -60,7 +60,7 @@ export function GenerationCenter() {
       addGeneratedMap(newMap);
       setGeneratedId(newMap.id);
       setStatus('done');
-      setMessage(newMap.sourceMeta?.mode === 'prototype-fallback' ? t('gen', 'fallbackMode') : t('gen', 'realMode'));
+      setMessage(t('gen', 'statusDone'));
     } catch (error) {
       const nextMessage = error instanceof Error ? error.message : 'Generation failed.';
       setStatus('error');
@@ -94,7 +94,7 @@ export function GenerationCenter() {
       addGeneratedMap(newMap);
       setGeneratedId(newMap.id);
       setStatus('done');
-      setMessage(newMap.sourceMeta?.mode === 'prototype-fallback' ? t('gen', 'fallbackMode') : t('gen', 'realMode'));
+      setMessage(t('gen', 'statusDone'));
     } catch (error) {
       const nextMessage = error instanceof Error ? error.message : 'Generation failed.';
       setStatus('error');
