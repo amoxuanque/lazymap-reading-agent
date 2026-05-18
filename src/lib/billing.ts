@@ -1,4 +1,4 @@
-export type BillingAction = 'search' | 'generateCatalog' | 'generateUpload';
+export type BillingAction = 'generateCatalog' | 'generateUpload';
 export type CreditPackId = 'pack-1000' | 'pack-5000' | 'pack-10000';
 
 export interface UsageRecord {
@@ -27,7 +27,6 @@ export interface UserAccount {
 }
 
 export const ACTION_COSTS: Record<BillingAction, number> = {
-  search: 20,
   generateCatalog: 150,
   generateUpload: 50,
 };
@@ -80,20 +79,16 @@ export function createDemoAccount(): UserAccount {
 export function estimatePackCapacity(pack: CreditPack) {
   const totalCredits = getPackCredits(pack);
   return {
-    searches: Math.floor(totalCredits / ACTION_COSTS.search),
     uploadMaps: Math.floor(totalCredits / ACTION_COSTS.generateUpload),
     searchMaps: Math.floor(totalCredits / ACTION_COSTS.generateCatalog),
   };
 }
 
 export function actionLabel(kind: BillingAction) {
-  if (kind === 'search') {
-    return '全网搜书';
-  }
   if (kind === 'generateUpload') {
     return '上传文件生成';
   }
-  return '搜索并生成地图';
+  return '全网搜索生成';
 }
 
 export function consumeAccountCredits(account: UserAccount | null, kind: BillingAction, title?: string) {

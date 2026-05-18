@@ -344,7 +344,7 @@ function buildConfigStatus() {
 
 function sendGenerationUnavailable(response, detail) {
   response.status(503).json({
-    error: 'Reading map generation is unavailable.',
+    error: '当前无法生成阅读地图。',
     code: 'GENERATION_UNAVAILABLE',
     detail,
     config: buildConfigStatus(),
@@ -2197,13 +2197,13 @@ app.get('/api/search-books', async (request, response) => {
 app.post('/api/generate-map', async (request, response) => {
   const input = request.body || {};
   if (!input.title) {
-    response.status(400).json({ error: 'Missing required field: title' });
+    response.status(400).json({ error: '缺少必填字段：title。请先提供书名。' });
     return;
   }
 
   if (!SILICONFLOW_API_KEY) {
     if (!ALLOW_PROTOTYPE_FALLBACK) {
-      sendGenerationUnavailable(response, 'SILICONFLOW_API_KEY is missing in the current deployment.');
+      sendGenerationUnavailable(response, '当前环境缺少 SILICONFLOW_API_KEY，暂时无法使用正式生成链路。');
       return;
     }
     const map = buildPrototypeMap(input);
@@ -2232,7 +2232,7 @@ app.post('/api/generate-map', async (request, response) => {
     if (!ALLOW_PROTOTYPE_FALLBACK) {
       sendGenerationUnavailable(
         response,
-        error instanceof Error ? error.message : 'SiliconFlow generation failed before a valid reading map was produced.',
+        error instanceof Error ? error.message : '生成失败，暂时没有产出可用的阅读地图。',
       );
       return;
     }

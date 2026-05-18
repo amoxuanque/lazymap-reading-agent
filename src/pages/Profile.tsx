@@ -11,19 +11,15 @@ export function Profile() {
 
   const usageSummary = useMemo(() => {
     if (!account) {
-      return { searches: 0, generations: 0 };
+      return { generations: 0 };
     }
 
     return account.usageHistory.reduce(
-      (summary, item) => {
-        if (item.kind === 'search') {
-          summary.searches += 1;
-        } else {
-          summary.generations += 1;
-        }
+      (summary) => {
+        summary.generations += 1;
         return summary;
       },
-      { searches: 0, generations: 0 },
+      { generations: 0 },
     );
   }, [account]);
 

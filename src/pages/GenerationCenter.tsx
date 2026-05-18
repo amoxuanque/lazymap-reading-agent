@@ -33,22 +33,22 @@ export function GenerationCenter() {
       return;
     }
 
-    const billingResult = consumeCredits('generateUpload', { title: selectedFile.name });
-    if (!billingResult.ok) {
-      setStatus('error');
-      setMessage(billingResult.error || '当前积分不足。');
-      return;
-    }
-
     setStatus('parsing');
-    setMessage(`${t('gen', 'parsing')}（已扣 ${ACTION_COSTS.generateUpload} 积分）`);
+    setMessage(t('gen', 'parsing'));
     setWarnings([]);
 
     try {
       const parsed = await parseUploadedFile(selectedFile);
+      const billingResult = consumeCredits('generateUpload', { title: selectedFile.name });
+      if (!billingResult.ok) {
+        setStatus('error');
+        setMessage(billingResult.error || '当前积分不足。');
+        return;
+      }
+
       setWarnings(parsed.warnings);
       setStatus('generating');
-      setMessage(t('gen', 'statusGenerating'));
+      setMessage(`${t('gen', 'statusGenerating')}（已扣 ${ACTION_COSTS.generateUpload} 积分）`);
 
       const newMap = await generateReadingMap({
         title: parsed.title,
@@ -132,7 +132,7 @@ export function GenerationCenter() {
                 ref={fileInputRef}
                 onChange={handleFileSelect}
                 className="hidden"
-                accept=".epub,.txt,.md,.markdown,.pdf"
+                accept=".epub,.txt,.md,.markdown"
               />
               {!selectedFile ? (
                 <>
@@ -143,7 +143,7 @@ export function GenerationCenter() {
                   >
                     选择文件
                   </Button>
-                  <p className="mt-3 text-xs text-zinc-500">支持 EPUB、TXT、MD。</p>
+                  <p className="mt-3 text-xs text-zinc-500">仅支持 EPUB / TXT / MD。</p>
                 </>
               ) : (
                 <div className="flex flex-col items-center gap-4">

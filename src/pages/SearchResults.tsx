@@ -7,11 +7,10 @@ import { motion } from 'motion/react';
 import { searchCatalog } from '../services/catalogService';
 import { SearchBook } from '../lib/types';
 export function SearchResults() {
-  const { t, searchQuery, navigate, consumeCredits } = useApp();
+  const { t, searchQuery, navigate } = useApp();
   const [localQuery, setLocalQuery] = useState(searchQuery);
   const [results, setResults] = useState<SearchBook[]>([]);
   const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -24,19 +23,6 @@ export function SearchResults() {
       }
 
       setLoading(true);
-      setErrorMessage('');
-
-      const billingResult = consumeCredits('search', { title: searchQuery });
-      if (!billingResult.ok) {
-        if (!active) {
-          return;
-        }
-        setLoading(false);
-        setResults([]);
-        setErrorMessage(billingResult.error || '当前积分不足，无法继续搜索。');
-        return;
-      }
-
       const found = await searchCatalog(searchQuery);
       if (!active) {
         return;
@@ -108,17 +94,6 @@ export function SearchResults() {
           {results.length} 条结果
         </div>
       </div>
-
-      {errorMessage && (
-        <div className="rounded-2xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-200">
-          {errorMessage}
-          <div className="mt-3">
-            <Button variant="outline" className="border-red-500/20 text-red-100 hover:bg-red-500/10" onClick={() => navigate('profile')}>
-              去账户中心查看计划
-            </Button>
-          </div>
-        </div>
-      )}
 
       {loading ? (
         <div className="rounded-3xl border border-white/5 bg-white/[0.02] px-6 py-16 text-center">

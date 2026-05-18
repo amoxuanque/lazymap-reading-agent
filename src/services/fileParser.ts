@@ -164,9 +164,8 @@ export async function parseUploadedFile(file: File): Promise<ParsedUpload> {
   }
 
   if (extension === 'pdf') {
-    throw new Error('当前版本已支持 EPUB / TXT / MD，PDF 解析器还没接入。先用 EPUB 或文本文件最稳。');
+    throw new Error('当前仅支持 EPUB / TXT / MD，暂不支持 PDF。请换成这些格式后再生成。');
   }
 
-  throw new Error('当前版本支持 EPUB / TXT / MD。请换成这些格式再试。');
+  throw new Error('当前仅支持 EPUB / TXT / MD。请上传这些格式的文件。');
 }
-

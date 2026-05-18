@@ -5,6 +5,7 @@ import { Button } from '../ui/Button';
 
 export function Navbar() {
   const { navigate, t, account } = useApp();
+  const balanceText = account ? `${account.creditBalance.toLocaleString()} 积分` : '';
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-white/5 bg-[#0f1117]/80 backdrop-blur-md">
@@ -39,12 +40,13 @@ export function Navbar() {
 
           {account && (
             <button
+              key={`${account.id}-${balanceText}`}
               onClick={() => navigate('profile')}
               className="hidden items-center gap-3 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-left sm:flex"
             >
               <div className="text-right">
                 <div className="text-[11px] text-zinc-500">我的账户</div>
-                <div className="text-sm font-medium text-white">{account.creditBalance} 积分</div>
+                <div className="text-sm font-medium text-white">{balanceText}</div>
               </div>
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-500/10 text-amber-400">
                 <User className="h-4 w-4" />

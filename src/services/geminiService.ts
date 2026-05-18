@@ -23,14 +23,14 @@ export async function generateReadingMap(input: GenerateMapInput): Promise<Readi
   });
 
   if (!response.ok) {
-    let detail = response.statusText;
+    let detail = '';
     try {
       const payload = await response.json();
-      detail = payload?.error || detail;
+      detail = payload?.detail || payload?.error || detail;
     } catch {
       // Ignore JSON parse failure and keep the default status text.
     }
-    throw new Error(detail || 'Generation failed.');
+    throw new Error(detail || '生成失败，请稍后重试。');
   }
 
   const payload = (await response.json()) as GenerateMapResponse;
