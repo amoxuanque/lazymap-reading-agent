@@ -1,30 +1,85 @@
-import React, { useState } from 'react';
-import { ArrowLeft, Copy, Send, Share2 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { AlertCircle, ArrowLeft, Copy, Loader2, Send, Share2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useApp } from '../contexts/AppContext';
 import { getMapById } from '../lib/mockData';
+import { createShareMap, getSharedMap } from '../services/shareService';
 
 export function MapDetail() {
-  const { currentMapId, navigate, t } = useApp();
-  const rawMapData = getMapById(currentMapId);
-  const mapData = rawMapData;
-  const leadingQuote = mapData.quotes?.[0];
-  const leadingRoute = mapData.routes?.[0];
-  const leadingCards = mapData.overview?.cards?.slice(0, 3) || [];
+  const { currentMapId, shareId, navigate, t } = useApp();
   const allCategoryLabel = '全部';
+  const localMapData = shareId ? null : getMapById(currentMapId);
+  const [sharedMap, setSharedMap] = useState<ReturnType<typeof getMapById> | null>(null);
+  const [shareLoading, setShareLoading] = useState(Boolean(shareId));
+  const [shareError, setShareError] = useState('');
+  const [shareLinkLoading, setShareLinkLoading] = useState(false);
+  const [shareActionMessage, setShareActionMessage] = useState('');
+  const [generatedShareUrl, setGeneratedShareUrl] = useState('');
+  const [activePart, setActivePart] = useState<string | undefined>(undefined);
+  const [activeCategory, setActiveCategory] = useState<string | undefined>(undefined);
+  const mapData = shareId ? sharedMap : localMapData;
+  const leadingQuote = mapData?.quotes?.[0];
+  const leadingRoute = mapData?.routes?.[0];
+  const leadingCards = mapData?.overview?.cards?.slice(0, 3) || [];
 
-  const [activePart, setActivePart] = useState(mapData.parts?.[0]?.id);
-  const [activeCategory, setActiveCategory] = useState(mapData.methods?.items?.length ? allCategoryLabel : mapData.methods?.categories?.[0]);
   const visibleMethodItems =
-    !mapData.methods
+    !mapData?.methods
       ? []
       : activeCategory === allCategoryLabel
         ? mapData.methods.items
         : mapData.methods.items.filter((item) => item.category === activeCategory);
 
-  const shareUrl = typeof window !== 'undefined'
-    ? `${window.location.origin}${window.location.pathname}?mapId=${mapData.id}`
-    : '';
+  useEffect(() => {
+    let active = true;
+
+    if (!shareId) {
+      setSharedMap(null);
+      setShareLoading(false);
+      setShareError('');
+      return () => {
+        active = false;
+      };
+    }
+
+    setShareLoading(true);
+    setShareError('');
+    setSharedMap(null);
+
+    getSharedMap(shareId)
+      .then((map) => {
+        if (!active) {
+          return;
+        }
+        setSharedMap(map);
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+        setShareError('分享已失效或服务已重启');
+      })
+      .finally(() => {
+        if (!active) {
+          return;
+        }
+        setShareLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [shareId]);
+
+  useEffect(() => {
+    if (!mapData) {
+      return;
+    }
+
+    setActivePart(mapData.parts?.[0]?.id);
+    setActiveCategory(mapData.methods?.items?.length ? allCategoryLabel : mapData.methods?.categories?.[0]);
+    setGeneratedShareUrl('');
+    setShareActionMessage('');
+  }, [mapData?.id]);
 
   const scrollToSection = (id: string) => {
     const element = document.getElementById(id);
@@ -33,28 +88,59 @@ export function MapDetail() {
     }
   };
 
-  const handleCopyLink = async () => {
-    if (!shareUrl) {
-      return;
+  const ensureShareUrl = async () => {
+    if (!mapData) {
+      throw new Error('当前地图尚未加载完成。');
     }
 
+    if (generatedShareUrl) {
+      return generatedShareUrl;
+    }
+
+    setShareLinkLoading(true);
+    setShareActionMessage('');
+
     try {
+      const payload = await createShareMap(mapData);
+      if (typeof window === 'undefined') {
+        throw new Error('当前环境无法生成分享链接。');
+      }
+
+      const url = `${window.location.origin}${window.location.pathname}?shareId=${payload.shareId}`;
+      setGeneratedShareUrl(url);
+      setShareActionMessage('临时分享链接已生成。');
+      return url;
+    } catch (error) {
+      const nextMessage = error instanceof Error ? error.message : '分享创建失败，请稍后重试。';
+      setShareActionMessage(nextMessage);
+      throw error;
+    } finally {
+      setShareLinkLoading(false);
+    }
+  };
+
+  const handleCopyLink = async () => {
+    try {
+      const shareUrl = await ensureShareUrl();
       await navigator.clipboard.writeText(shareUrl);
+      setShareActionMessage('分享链接已复制。');
     } catch (error) {
       console.warn('Failed to copy share link.', error);
     }
   };
 
   const handleNativeShare = async () => {
-    if (!shareUrl || !navigator.share) {
-      await handleCopyLink();
-      return;
-    }
-
     try {
+      const shareUrl = await ensureShareUrl();
+      if (!navigator.share) {
+        await navigator.clipboard.writeText(shareUrl);
+        setShareActionMessage('分享链接已复制。');
+        return;
+      }
+
       await navigator.share({
-        title: mapData.title,
-        text: mapData.oneLiner?.zh,
+        title: mapData?.title,
+        text: mapData?.oneLiner?.zh,
         url: shareUrl,
       });
     } catch (error) {
@@ -62,11 +148,27 @@ export function MapDetail() {
     }
   };
 
-  const socialShareLinks = [
-    { label: '微博', href: `https://service.weibo.com/share/share.php?title=${encodeURIComponent(`${mapData.title}｜${mapData.oneLiner?.zh || ''}`)}&url=${encodeURIComponent(shareUrl)}` },
-    { label: 'X', href: `https://twitter.com/intent/tweet?text=${encodeURIComponent(`${mapData.title}｜${mapData.oneLiner?.zh || ''}`)}&url=${encodeURIComponent(shareUrl)}` },
-    { label: 'LinkedIn', href: `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}` },
-  ];
+  const handleSocialShare = async (channel: 'weibo' | 'x' | 'linkedin') => {
+    if (typeof window === 'undefined' || !mapData) {
+      return;
+    }
+
+    try {
+      const shareUrl = await ensureShareUrl();
+      const title = `${mapData.title}｜${mapData.oneLiner?.zh || ''}`;
+      const socialUrl =
+        channel === 'weibo'
+          ? `https://service.weibo.com/share/share.php?title=${encodeURIComponent(title)}&url=${encodeURIComponent(shareUrl)}`
+          : channel === 'x'
+            ? `https://twitter.com/intent/tweet?text=${encodeURIComponent(title)}&url=${encodeURIComponent(shareUrl)}`
+            : `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`;
+
+      window.open(socialUrl, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      console.warn('Social share failed.', error);
+    }
+  };
+
   const copy = {
     overview: '总览',
     knowledgeMap: '知识地图',
@@ -77,8 +179,8 @@ export function MapDetail() {
     readStructure: '先看整本书骨架',
     jumpMethods: '直接进入方法地图',
     jumpRoutes: '看阅读路线',
-    shareNow: '直接分享',
-    copyLink: '复制链接',
+    shareNow: shareLinkLoading ? '生成分享链接中...' : '直接分享',
+    copyLink: shareLinkLoading ? '生成分享链接中...' : '复制链接',
     readingMap: '阅读地图',
     readingPosition: '阅读定位',
     keySentence: '读前一句',
@@ -97,6 +199,58 @@ export function MapDetail() {
     debateTitle: '今天再读，哪些地方要带着判断',
     routeTitle: '不同人该怎么读',
   };
+
+  if (shareId && shareLoading) {
+    return (
+      <div className="min-h-screen bg-[#0f1117] px-4 py-24 text-zinc-300">
+        <div className="mx-auto max-w-2xl rounded-3xl border border-white/5 bg-white/[0.02] p-10 text-center">
+          <Loader2 className="mx-auto h-12 w-12 animate-spin text-amber-500" />
+          <h1 className="mt-6 text-3xl font-serif font-bold text-white">正在读取分享地图</h1>
+          <p className="mt-3 text-sm text-zinc-400">这个链接不依赖本地缓存，会从服务端临时分享记录中读取。</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (shareId && shareError) {
+    return (
+      <div className="min-h-screen bg-[#0f1117] px-4 py-24 text-zinc-300">
+        <div className="mx-auto max-w-2xl rounded-3xl border border-red-500/20 bg-red-500/5 p-10 text-center">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 text-red-300">
+            <AlertCircle className="h-8 w-8" />
+          </div>
+          <h1 className="mt-6 text-3xl font-serif font-bold text-white">分享已失效或服务已重启</h1>
+          <p className="mt-3 text-sm text-zinc-300">请让分享者重新生成链接后再打开。当前页面不会回落到默认地图。</p>
+          <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
+            <button
+              onClick={() => navigate('home')}
+              className="rounded-full border border-white/10 bg-white/[0.03] px-6 py-3 text-sm text-zinc-100 hover:bg-white/[0.06]"
+            >
+              返回首页
+            </button>
+            <button
+              onClick={() => navigate('shelf')}
+              className="rounded-full border border-white/10 bg-white/[0.03] px-6 py-3 text-sm text-zinc-100 hover:bg-white/[0.06]"
+            >
+              返回书架
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!mapData) {
+    return null;
+  }
+
+  const socialShareItems = [
+    { label: '微博', channel: 'weibo' as const },
+    { label: 'X', channel: 'x' as const },
+    { label: 'LinkedIn', channel: 'linkedin' as const },
+  ];
+
+  const isShareActionDisabled = shareLinkLoading || Boolean(shareId && shareLoading);
 
   return (
     <div className="min-h-screen bg-[#0f1117] text-zinc-300 font-sans selection:bg-amber-500/30">
@@ -145,26 +299,37 @@ export function MapDetail() {
             </div>
 
             <div className="mb-10 flex flex-wrap gap-3">
-              <button onClick={handleNativeShare} className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-zinc-200 hover:bg-white/[0.06]">
+              <button
+                onClick={handleNativeShare}
+                disabled={isShareActionDisabled}
+                className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-zinc-200 hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-60"
+              >
                 <Share2 className="mr-2 h-4 w-4" />
                 {copy.shareNow}
               </button>
-              <button onClick={handleCopyLink} className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-zinc-200 hover:bg-white/[0.06]">
+              <button
+                onClick={handleCopyLink}
+                disabled={isShareActionDisabled}
+                className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-zinc-200 hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-60"
+              >
                 <Copy className="mr-2 h-4 w-4" />
                 {copy.copyLink}
               </button>
-              {socialShareLinks.map((item) => (
-                <a
+              {socialShareItems.map((item) => (
+                <button
                   key={item.label}
-                  href={item.href}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-zinc-200 hover:bg-white/[0.06]"
+                  onClick={() => handleSocialShare(item.channel)}
+                  disabled={isShareActionDisabled}
+                  className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-zinc-200 hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <Send className="mr-2 h-4 w-4" />
                   {item.label}
-                </a>
+                </button>
               ))}
+            </div>
+            <div className="mb-10 space-y-2">
+              <p className="text-sm text-zinc-500">这是临时分享链接，服务重启后可能失效。</p>
+              {shareActionMessage && <p className="text-sm text-amber-300">{shareActionMessage}</p>}
             </div>
 
             {mapData.stats && (

@@ -18,6 +18,7 @@ interface AppState {
   searchQuery: string;
   searchAuthor: string;
   currentMapId: string | null;
+  shareId: string | null;
 }
 
 interface ConsumeResult {
@@ -47,10 +48,12 @@ function getInitialState(): AppState {
       searchQuery: '',
       searchAuthor: '',
       currentMapId: null,
+      shareId: null,
     };
   }
 
   const params = new URLSearchParams(window.location.search);
+  const shareId = params.get('shareId');
   const mapId = params.get('mapId');
   const query = params.get('q') || '';
   const author = params.get('author') || '';
@@ -58,25 +61,29 @@ function getInitialState(): AppState {
 
   return {
     language: 'zh',
-    currentPage: mapId ? 'map' : page || (query ? 'search' : 'home'),
+    currentPage: shareId || mapId ? 'map' : page || (query ? 'search' : 'home'),
     searchQuery: query,
     searchAuthor: author,
     currentMapId: mapId,
+    shareId,
   };
 }
 
-function updateUrl(page: Page, params?: { mapId?: string | null; query?: string; author?: string }) {
+function updateUrl(page: Page, params?: { mapId?: string | null; shareId?: string | null; query?: string; author?: string }) {
   if (typeof window === 'undefined') {
     return;
   }
 
   const next = new URL(window.location.href);
+  next.searchParams.delete('shareId');
   next.searchParams.delete('mapId');
   next.searchParams.delete('q');
   next.searchParams.delete('author');
   next.searchParams.delete('page');
 
-  if (page === 'map' && params?.mapId) {
+  if (page === 'map' && params?.shareId) {
+    next.searchParams.set('shareId', params.shareId);
+  } else if (page === 'map' && params?.mapId) {
     next.searchParams.set('mapId', params.mapId);
   } else if (page === 'search' && params?.query) {
     next.searchParams.set('q', params.query);
@@ -97,7 +104,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const navigate = (page: Page, params?: any) => {
     const nextQuery = params?.query !== undefined ? params.query : state.searchQuery;
     const nextAuthor = params?.author !== undefined ? params.author : state.searchAuthor;
-    const nextMapId = params?.mapId !== undefined ? params.mapId : state.currentMapId;
+    const nextMapId =
+      page === 'map'
+        ? (params?.shareId ? null : (params?.mapId !== undefined ? params.mapId : state.currentMapId))
+        : state.currentMapId;
+    const nextShareId =
+      page === 'map'
+        ? (params?.shareId !== undefined ? params.shareId : (params?.mapId !== undefined ? null : state.shareId))
+        : state.shareId;
 
     setState((prev) => ({
       ...prev,
@@ -105,9 +119,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       searchQuery: nextQuery,
       searchAuthor: nextAuthor,
       currentMapId: nextMapId,
+      shareId: nextShareId,
     }));
 
-    updateUrl(page, { query: nextQuery, author: nextAuthor, mapId: nextMapId });
+    updateUrl(page, { query: nextQuery, author: nextAuthor, mapId: nextMapId, shareId: nextShareId });
     window.scrollTo(0, 0);
   };
 

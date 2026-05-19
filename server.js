@@ -1,5 +1,6 @@
 import express from 'express';
 import dotenv from 'dotenv';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -24,6 +25,8 @@ const SILICONFLOW_TIMEOUT_MS = Number(process.env.SILICONFLOW_TIMEOUT_MS || 9000
 const TAVILY_TIMEOUT_MS = Number(process.env.TAVILY_TIMEOUT_MS || 12000);
 const GOOGLE_BOOKS_TIMEOUT_MS = Number(process.env.GOOGLE_BOOKS_TIMEOUT_MS || 12000);
 const OPEN_LIBRARY_TIMEOUT_MS = Number(process.env.OPEN_LIBRARY_TIMEOUT_MS || 12000);
+const SHARE_TTL_MS = Number(process.env.SHARE_TTL_MS || 1000 * 60 * 60 * 6);
+const SHARE_STORE_LIMIT = Number(process.env.SHARE_STORE_LIMIT || 200);
 const ALLOW_PROTOTYPE_FALLBACK = process.env.ALLOW_PROTOTYPE_FALLBACK
   ? ['1', 'true', 'yes', 'on'].includes(String(process.env.ALLOW_PROTOTYPE_FALLBACK).toLowerCase())
   : NODE_ENV !== 'production';
@@ -31,6 +34,7 @@ const ALLOW_PROTOTYPE_FALLBACK = process.env.ALLOW_PROTOTYPE_FALLBACK
 app.use(express.json({ limit: '2mb' }));
 
 const fallbackCover = 'https://images.unsplash.com/photo-1512820790803-83ca734da794?q=80&w=800&auto=format&fit=crop';
+const shareStore = new Map();
 
 const libraryMaps = [
   {
@@ -170,6 +174,22 @@ function searchLocalLibrary(query) {
     .filter((item) => item.score >= 60)
     .sort((a, b) => b.score - a.score)
     .map(({ book }) => book);
+}
+
+function cleanupShareStore(now = Date.now()) {
+  for (const [shareId, entry] of shareStore.entries()) {
+    if (!entry || typeof entry.expiresAt !== 'number' || entry.expiresAt <= now) {
+      shareStore.delete(shareId);
+    }
+  }
+
+  while (shareStore.size > SHARE_STORE_LIMIT) {
+    const oldestShareId = shareStore.keys().next().value;
+    if (!oldestShareId) {
+      break;
+    }
+    shareStore.delete(oldestShareId);
+  }
 }
 
 function buildPrototypeMap(input) {
@@ -2192,6 +2212,50 @@ app.get('/api/search-books', async (request, response) => {
     console.error('Search pipeline failed, falling back to local library only.', error);
     response.json({ results: searchLocalLibrary(query) });
   }
+});
+
+app.post('/api/share-map', (request, response) => {
+  cleanupShareStore();
+
+  const map = request.body?.map;
+  if (!map || typeof map !== 'object' || !map.id || !map.title) {
+    response.status(400).json({ error: '缺少可分享的地图数据。' });
+    return;
+  }
+
+  const now = Date.now();
+  const shareId = randomUUID();
+  const expiresAt = now + SHARE_TTL_MS;
+
+  shareStore.set(shareId, {
+    map,
+    createdAt: now,
+    expiresAt,
+  });
+  cleanupShareStore(now);
+
+  response.json({
+    shareId,
+    expiresAt: new Date(expiresAt).toISOString(),
+  });
+});
+
+app.get('/api/share-map/:id', (request, response) => {
+  cleanupShareStore();
+
+  const shareId = String(request.params.id || '').trim();
+  const entry = shareStore.get(shareId);
+
+  if (!entry) {
+    response.status(404).json({ error: '分享已失效或不存在' });
+    return;
+  }
+
+  response.json({
+    shareId,
+    expiresAt: new Date(entry.expiresAt).toISOString(),
+    map: entry.map,
+  });
 });
 
 app.post('/api/generate-map', async (request, response) => {
