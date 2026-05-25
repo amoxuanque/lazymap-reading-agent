@@ -1,13 +1,6 @@
 import React, { createContext, useContext, useMemo, useState, ReactNode } from 'react';
 import { Language, translations } from '../locales/translations';
-import {
-  BillingAction,
-  CreditPackId,
-  UserAccount,
-  consumeAccountCredits,
-  createDemoAccount,
-  purchaseCredits,
-} from '../lib/billing';
+import { UserAccount, createDemoAccount } from '../lib/billing';
 import { loadUserAccount, persistUserAccount } from '../lib/storage';
 
 type Page = 'home' | 'search' | 'map' | 'shelf' | 'gen' | 'profile';
@@ -21,20 +14,11 @@ interface AppState {
   shareId: string | null;
 }
 
-interface ConsumeResult {
-  ok: boolean;
-      error?: string;
-  chargedCredits?: number;
-}
-
 interface AppContextType extends AppState {
   account: UserAccount | null;
   navigate: (page: Page, params?: any) => void;
   signInDemo: (payload?: { name?: string; email?: string }) => void;
   signOut: () => void;
-  purchasePack: (packId: CreditPackId) => void;
-  resetCredits: () => void;
-  consumeCredits: (action: BillingAction, meta?: { title?: string }) => ConsumeResult;
   t: (section: keyof typeof translations.zh, key: string) => string;
 }
 
@@ -146,41 +130,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAndPersistAccount(null);
   };
 
-  const purchasePack = (packId: CreditPackId) => {
-    const nextAccount = purchaseCredits(account, packId);
-    setAndPersistAccount(nextAccount);
-  };
-
-  const resetCredits = () => {
-    if (!account) {
-      signInDemo();
-      return;
-    }
-
-    const seeded = createDemoAccount();
-    setAndPersistAccount({
-      ...seeded,
-      name: account.name,
-      email: account.email,
-    });
-  };
-
-  const consumeCredits = (action: BillingAction, meta?: { title?: string }) => {
-    const result = consumeAccountCredits(account, action, meta?.title);
-    if (result.ok && result.account) {
-      setAndPersistAccount(result.account);
-      return {
-        ok: true,
-        chargedCredits: result.chargedCredits,
-      } satisfies ConsumeResult;
-    }
-
-    return {
-      ok: false,
-      error: result.error || '当前无法扣费，请稍后重试。',
-    } satisfies ConsumeResult;
-  };
-
   const t = (section: keyof typeof translations.zh, key: string) => {
     const sectionData = translations[state.language][section] as Record<string, string>;
     return sectionData[key] || key;
@@ -193,9 +142,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       navigate,
       signInDemo,
       signOut,
-      purchasePack,
-      resetCredits,
-      consumeCredits,
       t,
     }),
     [state, account],

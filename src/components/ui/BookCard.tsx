@@ -3,7 +3,6 @@ import { useApp } from '../../contexts/AppContext';
 import { Button } from './Button';
 import { FileText, Upload, CreditCard } from 'lucide-react';
 import { SearchBook } from '../../lib/types';
-import { ACTION_COSTS } from '../../lib/billing';
 import { GeneratedCover } from './GeneratedCover';
 
 interface BookCardProps {
@@ -85,12 +84,12 @@ export function BookCard({ book }: BookCardProps) {
           ) : book.status === 'no_map_upload' ? (
             <Button variant="secondary" className="w-full bg-zinc-800 hover:bg-zinc-700 text-white border-none" onClick={handleAction}>
               <Upload className="mr-2 h-4 w-4" />
-              {t('search', 'uploadGenerate')} · {ACTION_COSTS.generateUpload}
+              {t('search', 'uploadGenerate')}
             </Button>
           ) : (
             <Button variant="outline" className="w-full border-white/10 hover:bg-white/5 text-zinc-300" onClick={handleAction}>
               <CreditCard className="mr-2 h-4 w-4" />
-              {t('search', 'paidGenerate')} · {ACTION_COSTS.generateCatalog}
+              {t('search', 'paidGenerate')}
             </Button>
           )}
         </div>

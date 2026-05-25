@@ -5,7 +5,6 @@ import { Button } from '../components/ui/Button';
 import { BookCard } from '../components/ui/BookCard';
 import { getFeaturedMaps } from '../lib/mockData';
 import { motion } from 'motion/react';
-import { ACTION_COSTS } from '../lib/billing';
 
 export function Home() {
   const { t, navigate, language } = useApp();
@@ -60,7 +59,7 @@ export function Home() {
             </Button>
             <Button variant="outline" size="lg" className="w-full sm:w-auto rounded-xl border-white/10 text-zinc-300 hover:bg-white/5 hover:text-white" onClick={() => navigate('gen')}>
               <Sparkles className="mr-2 h-5 w-5" />
-              {t('home', 'paidBtn')} · {ACTION_COSTS.generateCatalog}
+              {t('home', 'paidBtn')}
             </Button>
           </div>
         </motion.div>

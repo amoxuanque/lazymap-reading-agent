@@ -6,12 +6,11 @@ import { motion } from 'motion/react';
 import { addGeneratedMap } from '../lib/mockData';
 import { generateReadingMap } from '../services/geminiService';
 import { parseUploadedFile } from '../services/fileParser';
-import { ACTION_COSTS } from '../lib/billing';
 
 type Status = 'idle' | 'parsing' | 'generating' | 'done' | 'error';
 
 export function GenerationCenter() {
-  const { t, searchQuery, searchAuthor, navigate, consumeCredits } = useApp();
+  const { t, searchQuery, searchAuthor, navigate } = useApp();
   const [status, setStatus] = useState<Status>('idle');
   const [generatedId, setGeneratedId] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -39,16 +38,9 @@ export function GenerationCenter() {
 
     try {
       const parsed = await parseUploadedFile(selectedFile);
-      const billingResult = consumeCredits('generateUpload', { title: selectedFile.name });
-      if (!billingResult.ok) {
-        setStatus('error');
-        setMessage(billingResult.error || '当前积分不足。');
-        return;
-      }
-
       setWarnings(parsed.warnings);
       setStatus('generating');
-      setMessage(`${t('gen', 'statusGenerating')}（已扣 ${ACTION_COSTS.generateUpload} 积分）`);
+      setMessage(t('gen', 'statusGenerating'));
 
       const newMap = await generateReadingMap({
         title: parsed.title,
@@ -73,15 +65,8 @@ export function GenerationCenter() {
       return;
     }
 
-    const billingResult = consumeCredits('generateCatalog', { title: searchQuery.trim() });
-    if (!billingResult.ok) {
-      setStatus('error');
-      setMessage(billingResult.error || '当前积分不足。');
-      return;
-    }
-
     setStatus('generating');
-    setMessage(`${t('gen', 'statusGenerating')}（已扣 ${ACTION_COSTS.generateCatalog} 积分）`);
+    setMessage(t('gen', 'statusGenerating'));
     setWarnings([]);
 
     try {
@@ -123,7 +108,7 @@ export function GenerationCenter() {
             <p className="mt-2 text-sm sm:text-base text-zinc-400 flex-1">{t('gen', 'uploadDesc')}</p>
 
             <div className="mt-6 rounded-2xl border border-white/5 bg-zinc-950/40 p-4 text-sm text-zinc-500">
-              自己上传文件生成阅读地图，{ACTION_COSTS.generateUpload} 积分一次。
+              自己上传文件生成阅读地图，适合已有 TXT / MD / EPUB 正文时直接使用。
             </div>
 
             <div className="mt-6 sm:mt-8 rounded-xl border-2 border-dashed border-white/10 bg-zinc-900/50 p-6 sm:p-8 text-center">
@@ -176,7 +161,7 @@ export function GenerationCenter() {
           >
             <div className="absolute top-0 right-0 p-4">
               <span className="inline-flex items-center rounded-full bg-amber-500/10 border border-amber-500/20 px-3 py-1 text-xs font-bold text-amber-500">
-                150 积分 / 次
+                按书名生成
               </span>
             </div>
             <div className="mb-4 sm:mb-6 flex h-12 w-12 sm:h-14 sm:w-14 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-500">
@@ -186,7 +171,7 @@ export function GenerationCenter() {
             <p className="mt-2 text-sm sm:text-base text-zinc-400 flex-1">{t('gen', 'paidDesc')}</p>
 
             <div className="mt-6 rounded-2xl border border-white/5 bg-zinc-950/40 p-4 text-sm text-zinc-500">
-              没有文件时，直接按书名全网搜索并生成阅读地图，{ACTION_COSTS.generateCatalog} 积分一次。
+              没有文件时，直接按书名全网搜索并生成阅读地图。
             </div>
 
             <div className="mt-6 sm:mt-8 space-y-4">
@@ -201,7 +186,7 @@ export function GenerationCenter() {
                 onClick={handleGenerateFromQuery}
                 disabled={!searchQuery.trim()}
               >
-                {t('gen', 'payBtn')} · {ACTION_COSTS.generateCatalog}
+                {t('gen', 'payBtn')}
               </Button>
             </div>
           </motion.div>

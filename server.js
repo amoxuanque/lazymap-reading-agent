@@ -17,16 +17,28 @@ const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY || process.env.GEMIN
 const SILICONFLOW_BASE_URL = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1';
 const SILICONFLOW_MODEL = process.env.SILICONFLOW_MODEL || 'Qwen/Qwen3-32B';
 const SILICONFLOW_POLISH_MODEL = process.env.SILICONFLOW_POLISH_MODEL || SILICONFLOW_MODEL;
+const SILICONFLOW_COMPACT_MODEL = process.env.SILICONFLOW_COMPACT_MODEL || 'Qwen/Qwen2.5-7B-Instruct';
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
 const TAVILY_BASE_URL = process.env.TAVILY_BASE_URL || 'https://api.tavily.com/search';
 const GOOGLE_BOOKS_BASE_URL = process.env.GOOGLE_BOOKS_BASE_URL || 'https://www.googleapis.com/books/v1/volumes';
 const OPEN_LIBRARY_BASE_URL = process.env.OPEN_LIBRARY_BASE_URL || 'https://openlibrary.org/search.json';
 const SILICONFLOW_TIMEOUT_MS = Number(process.env.SILICONFLOW_TIMEOUT_MS || 90000);
-const TAVILY_TIMEOUT_MS = Number(process.env.TAVILY_TIMEOUT_MS || 12000);
+const TAVILY_TIMEOUT_MS = Number(process.env.TAVILY_TIMEOUT_MS || 6000);
 const GOOGLE_BOOKS_TIMEOUT_MS = Number(process.env.GOOGLE_BOOKS_TIMEOUT_MS || 12000);
 const OPEN_LIBRARY_TIMEOUT_MS = Number(process.env.OPEN_LIBRARY_TIMEOUT_MS || 12000);
 const SHARE_TTL_MS = Number(process.env.SHARE_TTL_MS || 1000 * 60 * 60 * 6);
 const SHARE_STORE_LIMIT = Number(process.env.SHARE_STORE_LIMIT || 200);
+const CATALOG_GENERATION_BUDGET_MS = Number(process.env.CATALOG_GENERATION_BUDGET_MS || 45000);
+const UPLOAD_GENERATION_BUDGET_MS = Number(process.env.UPLOAD_GENERATION_BUDGET_MS || 55000);
+const ANALYSIS_STAGE_TIMEOUT_MS = Number(process.env.ANALYSIS_STAGE_TIMEOUT_MS || 10000);
+const SECTION_STAGE_TIMEOUT_MS = Number(process.env.SECTION_STAGE_TIMEOUT_MS || 14000);
+const SPARSE_STAGE_TIMEOUT_MS = Number(process.env.SPARSE_STAGE_TIMEOUT_MS || 8000);
+const COVER_LOOKUP_TIMEOUT_MS = Number(process.env.COVER_LOOKUP_TIMEOUT_MS || 2500);
+const MIN_STAGE_BUDGET_MS = Number(process.env.MIN_STAGE_BUDGET_MS || 1200);
+const COMPACT_GROUNDING_TIMEOUT_MS = Number(process.env.COMPACT_GROUNDING_TIMEOUT_MS || 3500);
+const CATALOG_COMPACT_TIMEOUT_MS = Number(process.env.CATALOG_COMPACT_TIMEOUT_MS || 24000);
+const UPLOAD_COMPACT_TIMEOUT_MS = Number(process.env.UPLOAD_COMPACT_TIMEOUT_MS || 32000);
+const UPLOAD_COMPRESSED_TEXT_MAX_CHARS = Number(process.env.UPLOAD_COMPRESSED_TEXT_MAX_CHARS || 2200);
 const ALLOW_PROTOTYPE_FALLBACK = process.env.ALLOW_PROTOTYPE_FALLBACK
   ? ['1', 'true', 'yes', 'on'].includes(String(process.env.ALLOW_PROTOTYPE_FALLBACK).toLowerCase())
   : NODE_ENV !== 'production';
@@ -132,30 +144,47 @@ function dedupeBooks(books) {
   });
 }
 
+function getLibraryLookupFields(book) {
+  return [book.title, ...(book.aliases || [])]
+    .map((value) => normalize(value))
+    .filter(Boolean);
+}
+
 function scoreLibraryBook(book, query) {
   const normalizedQuery = normalize(query);
-  const fields = [book.title, book.author, ...(book.aliases || [])].map(normalize);
+  const fields = getLibraryLookupFields(book);
+
+  if (!normalizedQuery || fields.length === 0) {
+    return 0;
+  }
 
   let score = 0;
+  let strongMatch = false;
   fields.forEach((field) => {
-    if (!field) {
-      return;
-    }
-
     if (field === normalizedQuery) {
-      score += 160;
-    } else if (field.startsWith(normalizedQuery)) {
-      score += 90;
-    } else if (field.includes(normalizedQuery)) {
-      score += 45;
+      strongMatch = true;
+      score = Math.max(score, 320);
+    } else if (field.startsWith(normalizedQuery) || normalizedQuery.startsWith(field)) {
+      strongMatch = true;
+      score = Math.max(score, 220);
+    } else if (normalizedQuery.length >= 8 && field.includes(normalizedQuery)) {
+      strongMatch = true;
+      score = Math.max(score, 140);
     }
   });
 
+  if (!strongMatch) {
+    return 0;
+  }
+
   tokenize(query).forEach((token) => {
     const normalizedToken = normalize(token);
+    if (!normalizedToken || normalizedToken.length < 3) {
+      return;
+    }
     fields.forEach((field) => {
-      if (normalizedToken && field.includes(normalizedToken)) {
-        score += 18;
+      if (field.includes(normalizedToken)) {
+        score += 10;
       }
     });
   });
@@ -171,9 +200,58 @@ function searchLocalLibrary(query) {
 
   return libraryMaps
     .map((book) => ({ book, score: scoreLibraryBook(book, trimmed) }))
-    .filter((item) => item.score >= 60)
+    .filter((item) => item.score >= 180)
     .sort((a, b) => b.score - a.score)
     .map(({ book }) => book);
+}
+
+function scoreCandidateTitleMatch(query, title) {
+  const normalizedQuery = normalize(query);
+  const normalizedTitle = normalize(title);
+
+  if (!normalizedQuery || !normalizedTitle) {
+    return 0;
+  }
+
+  if (normalizedQuery === normalizedTitle) {
+    return 320;
+  }
+
+  if (normalizedTitle.startsWith(normalizedQuery) || normalizedQuery.startsWith(normalizedTitle)) {
+    return 220;
+  }
+
+  if (normalizedQuery.length >= 8 && normalizedTitle.includes(normalizedQuery)) {
+    return 140;
+  }
+
+  return 0;
+}
+
+function findStrongLocalBookByTitle(title) {
+  const normalizedTitle = normalize(title);
+  if (!normalizedTitle) {
+    return null;
+  }
+
+  return libraryMaps.find((book) => getLibraryLookupFields(book).includes(normalizedTitle)) || null;
+}
+
+function getGenerationBudgetMs(input) {
+  return input?.sourceKind === 'upload' ? UPLOAD_GENERATION_BUDGET_MS : CATALOG_GENERATION_BUDGET_MS;
+}
+
+function getRemainingTimeMs(deadline) {
+  return Math.max(0, deadline - Date.now());
+}
+
+function capStageTimeout(deadline, desiredTimeoutMs, floorMs = MIN_STAGE_BUDGET_MS) {
+  const remaining = getRemainingTimeMs(deadline);
+  if (remaining < floorMs) {
+    return 0;
+  }
+
+  return Math.max(floorMs, Math.min(desiredTimeoutMs, remaining));
 }
 
 function cleanupShareStore(now = Date.now()) {
@@ -362,6 +440,285 @@ function buildConfigStatus() {
   };
 }
 
+function isUploadSource(input) {
+  return input?.sourceKind === 'upload' && trimText(input?.content).length > 0;
+}
+
+function getSourceStrategy(input) {
+  return isUploadSource(input) ? 'upload' : 'catalog';
+}
+
+function getSourceMode(input) {
+  return isUploadSource(input) ? 'source-grounded' : 'title-only';
+}
+
+function buildPromptStrategyNotes(input, section = 'general') {
+  const strategy = getSourceStrategy(input);
+  if (strategy === 'upload') {
+    const shared = [
+      '这是 upload 模式：优先依据上传正文，不要用书名常识替代正文证据。',
+      '如果正文没有支撑，就保守表达，不要写成确定事实。',
+      '方法卡必须尽量来自正文里的判断动作、章节推进或作者反复强调的结构。',
+      'quotes 只能写正文短句或明确标注为“关键判断”，不要伪装成原书逐字金句。',
+    ];
+    const catalogLikeRoute = '阅读路线必须基于正文结构安排“先读哪里、再读哪里”，不要写成泛泛的使用说明。';
+    const sectionNotes = {
+      analysis: [
+        '先抽正文里的结构层次、关键概念和论证推进，再用补充线索校正作者与书目事实。',
+        '不要把补充线索里的目录或评价直接当成正文结构。',
+      ],
+      meta: [
+        '入口层要回答“正文真正推进的主命题是什么”，不是普通内容简介。',
+        'overview 的递进关系要贴着正文推进顺序。',
+      ],
+      knowledge: [
+        'knowledgeMap 优先抽正文里的问题块、概念块、方法块，不要假装拥有额外章外知识。',
+      ],
+      parts: [
+        'parts 要像正文结构压缩后的阅读模块，而不是目录复述。',
+        '每个模块都要解释它在正文推进中承担什么任务。',
+      ],
+      methods: [
+        'methods 必须来自正文中可迁移的判断、动作或识别框架，少写概念标签。',
+      ],
+      synthesis: [
+        'quotes 可以是正文短句，也可以是“关键判断”，但 note 里要说明它为什么重要。',
+        'debates 要优先围绕正文里的适用边界、反例和保留看。',
+        catalogLikeRoute,
+      ],
+      enrichment: [
+        '补强时优先补正文结构深度、方法迁移和按章节推进的阅读路线。',
+        catalogLikeRoute,
+      ],
+      polish: [
+        '如果当前 quote 不能确认是正文短句，就改写成“关键判断”口径，不要装成原句。',
+        '优先修复正文利用不足、弱方法卡和弱阅读路线。',
+      ],
+    };
+    return [...shared, ...(sectionNotes[section] || [])].join('\n');
+  }
+
+  const shared = [
+    '这是 catalog 模式：只能基于 grounding 和公开资料生成，不要伪装拥有原书全文。',
+    '不确定的信息必须保守表达，不要写成章节级实锤细节。',
+    '不要把“可能是作者观点”写成“书中逐字原句”。',
+    '阅读路线要更像“如何进入这本书”，不是“如何直接应用这套理论”。',
+  ];
+  const sectionNotes = {
+    analysis: [
+      '先整理公开资料里稳定可确认的主题、结构线索、适用边界和误读风险。',
+      '如果来源不足，宁可写得克制，也不要补出像读过原书一样的细节。',
+    ],
+    meta: [
+      '入口层重点是“这本书大概率在处理什么问题、读时该警惕什么不确定性”。',
+    ],
+    knowledge: [
+      'knowledgeMap 应更像主题块、争议块和阅读框架，不要伪造章节级深描。',
+    ],
+    parts: [
+      'parts 更像阅读模块和理解切口，而不是假装还原作者的真实章节结构。',
+    ],
+    methods: [
+      'methods 只能提炼公开资料可支撑的阅读框架、识别角度和判断动作。',
+    ],
+    synthesis: [
+      'quotes 一律按“关键判断/高概率核心表达”处理，不要写成原书摘录口吻。',
+      'debates 要优先写公开争议、适用边界和误读风险。',
+      'routes 必须回答“先看什么、再看什么、为什么这样读”。',
+    ],
+    enrichment: [
+      '补强时优先补阅读入口、边界提醒和争议点，不要硬补章回细节。',
+    ],
+    polish: [
+      '如果 quote 看起来像原句但没有原文支撑，必须降级成“关键判断”表达。',
+      '优先修复伪原句、空泛标题和过度应用化的 routes。',
+    ],
+  };
+  return [...shared, ...(sectionNotes[section] || [])].join('\n');
+}
+
+function buildSectionFallbackTexts(input, title) {
+  const safeTitle = title || input.title || '这本书';
+  if (getSourceStrategy(input) === 'upload') {
+    return {
+      toolDesc: '从正文里反复出现的概念、判断动作和结构推进里抽取阅读抓手。',
+      partTitle: `${safeTitle} 的正文推进支点`,
+      partNav: '先看正文在这里推进了什么，再决定后面哪些章节值得深读。',
+      partTask: '把这部分当作正文结构中的关键拐点来理解。',
+      partPosition: '它决定这本书不是零散观点，而是一套如何推进判断的结构。',
+      methodCategory: '正文判断',
+      methodTitle: '先按正文推进找判断',
+      methodDesc: '不要只记结论，先看作者在这一段是如何提出问题、转折和压缩方法的。',
+      quotePrefix: '关键判断：',
+      debateTitle: '正文里最值得带走的判断，和最该保留看的边界',
+      debateValue: `读 ${safeTitle} 时，真正该带走的是它如何用结构推进判断，而不只是某个单点结论。`,
+      debateReservation: '如果缺少逐章回看，很多判断仍可能被读成过度简化的口号。',
+      routeAudience: '已经有正文、想高效读完的人',
+      route: '先看总览和 parts，再顺着正文结构读方法卡和 routes。',
+      routeFocus: ['正文主命题', '章节推进', '方法提炼'],
+    };
+  }
+
+  return {
+    toolDesc: '基于公开资料整理主题线索、适用边界和阅读入口，不伪装成完整原文解析。',
+    partTitle: `先用一个阅读切口进入 ${safeTitle}`,
+    partNav: '先看这部分为什么值得读，而不是假装已经掌握原书全部章节细节。',
+    partTask: '把公开资料里较稳定的主题线索压成一个可进入的阅读模块。',
+    partPosition: '它帮助读者先建立理解框架，再决定是否回到原书深读。',
+    methodCategory: '阅读框架',
+    methodTitle: '先确认公开线索能支撑什么',
+    methodDesc: '在没有原文时，先分清哪些判断来自公开资料，哪些只是高概率推断。',
+    quotePrefix: '关键判断：',
+    debateTitle: '公开资料能帮助进入这本书，但不能替代原书细读',
+    debateValue: `读 ${safeTitle} 时，公开线索足够帮助判断主题、价值和入口。`,
+    debateReservation: '但很多章节推进、论证顺序和语气细节，仍需要回到原书确认。',
+    routeAudience: '还没读原书、先判断值不值得读的人',
+    route: '先看总览、争议和阅读路线，再决定要不要回原书补正文。',
+    routeFocus: ['主题入口', '适用边界', '误读风险'],
+  };
+}
+
+function buildFallbackKnowledgeMap(input, title) {
+  const safeTitle = title || input.title || '这本书';
+  if (getSourceStrategy(input) === 'upload') {
+    return {
+      areas: [
+        { title: '主命题', status: '已抽取', progress: 84, color: 'bg-orange-500', desc: `先抓 ${safeTitle} 在正文里真正反复推进的核心问题。` },
+        { title: '结构推进', status: '已抽取', progress: 76, color: 'bg-cyan-500', desc: '把章节压成推进链，而不是停留在目录层。' },
+        { title: '判断动作', status: '已整理', progress: 68, color: 'bg-emerald-500', desc: '从正文里提炼可迁移的识别动作和判断标准。' },
+        { title: '适用边界', status: '已整理', progress: 58, color: 'bg-pink-500', desc: '把哪些地方要保留看、不能直接套用收进地图。' },
+      ],
+      tools: [
+        { title: '先找正文的主问题', desc: `先看 ${safeTitle} 在解决什么，而不是先记结论。`, points: ['主问题', '判断入口', '阅读价值'] },
+        { title: '把章节压成推进链', desc: '观察作者如何从背景、论证到方法一步步推进。', points: ['结构转折', '论证顺序', '重点回看'] },
+        { title: '把观点改写成动作', desc: '把正文里的高频判断改成可以迁移的识别动作。', points: ['识别条件', '判断动作', '应用边界'] },
+        { title: '先读路线后读细节', desc: '先用地图决定阅读顺序，再回到原书精读关键段落。', points: ['先总览', '再模块', '后精读'] },
+      ],
+    };
+  }
+
+  return {
+    areas: [
+      { title: '主题入口', status: '已整理', progress: 80, color: 'bg-orange-500', desc: `先回答 ${safeTitle} 大概率在处理什么问题。` },
+      { title: '公开结构线索', status: '已整理', progress: 64, color: 'bg-cyan-500', desc: '只整理公开资料能稳定支撑的结构线索。' },
+      { title: '阅读判断框架', status: '已整理', progress: 56, color: 'bg-emerald-500', desc: '给读者一个进入这本书的阅读框架，而不是假装已经完成精读。' },
+      { title: '误读风险', status: '待校准', progress: 42, color: 'bg-pink-500', desc: '把这本书最容易被过度简化或误用的地方先指出来。' },
+    ],
+    tools: [
+      { title: '先确认公开线索', desc: '先看哪些观点能被公开资料稳定支持。', points: ['来源可信度', '稳定主题', '不确定信息'] },
+      { title: '把主题压成阅读切口', desc: '不要假装还原全书结构，先压成可进入的理解框架。', points: ['进入问题', '阅读切口', '预期收益'] },
+      { title: '先看边界再看结论', desc: '争议和保留看能避免把一本书读成单向口号。', points: ['适用边界', '常见误读', '保留看'] },
+      { title: '让路线服务于是否深读', desc: '阅读路线先帮助判断值不值得读，再决定如何深读。', points: ['先总览', '再争议', '后回原书'] },
+    ],
+  };
+}
+
+function buildFallbackQuotes(input, title) {
+  const safeTitle = title || input.title || '这本书';
+  if (getSourceStrategy(input) === 'upload') {
+    return [
+      { quote: `关键判断：读 ${safeTitle} 时，真正该抓的是作者如何推进判断，而不只是最后结论。`, note: '当模型无法确认正文原句时，统一降级成关键判断，避免伪装成摘录。' },
+      { quote: '关键判断：先看结构里的转折点，再回到具体段落精读。', note: '阅读地图的价值是先定阅读顺序，再处理细节。' },
+      { quote: '关键判断：能迁移的方法，通常藏在作者反复出现的动作和判断里。', note: '这帮助把正文从信息变成可带走的工具。' },
+      { quote: '关键判断：任何看起来过于顺滑的结论，都值得回正文确认它是怎样成立的。', note: '提醒读者保留对上下文和论证过程的敏感度。' },
+    ];
+  }
+
+  return [
+    { quote: `关键判断：${safeTitle} 更适合先建立阅读入口，而不是直接替代原书精读。`, note: 'catalog 模式下把 quote 统一处理成关键判断，避免伪原句。' },
+    { quote: '关键判断：公开资料足够帮助判断主题，但不足以替代章节级理解。', note: '把来源保守性明确写出来，比假装完整更可信。' },
+    { quote: '关键判断：先看这本书解决什么问题，再决定要不要读它的全部细节。', note: '这是书名搜索路径下最稳定的阅读入口。' },
+    { quote: '关键判断：争议、边界和误读风险，往往比一句漂亮金句更值得先看。', note: '帮助读者避免把一本书消费成单向口号。' },
+  ];
+}
+
+function buildFallbackDebates(input, title) {
+  const fallbackTexts = buildSectionFallbackTexts(input, title);
+  const safeTitle = title || input.title || '这本书';
+  if (getSourceStrategy(input) === 'upload') {
+    return [
+      {
+        title: fallbackTexts.debateTitle,
+        value: fallbackTexts.debateValue,
+        reservation: fallbackTexts.debateReservation,
+      },
+      {
+        title: `正文结构足够清楚时，${safeTitle} 值不值得完整读完`,
+        value: '如果正文已经把问题、方法和边界推进得足够清楚，这本书就值得完整走一遍。',
+        reservation: '但如果只盯结论不看结构，读完整本也可能只记住几个被压平的口号。',
+      },
+    ];
+  }
+
+  return [
+    {
+      title: fallbackTexts.debateTitle,
+      value: fallbackTexts.debateValue,
+      reservation: fallbackTexts.debateReservation,
+    },
+    {
+      title: `在没有原文时，如何避免把 ${safeTitle} 读成“广义正确”`,
+      value: '先看公开资料里的主题、争议和阅读入口，仍然可以帮助判断这本书今天是否值得读。',
+      reservation: '但不要把这种判断误以为已经等于读懂作者的全部论证和章节安排。',
+    },
+  ];
+}
+
+function buildFallbackRoutes(input, title) {
+  const safeTitle = title || input.title || '这本书';
+  if (getSourceStrategy(input) === 'upload') {
+    return [
+      { audience: '先判断整本书骨架的人', route: `先看 ${safeTitle} 的总览和 parts，再回正文核对每个模块的推进关系。`, focus: ['主命题', '结构推进', '模块位置'] },
+      { audience: '要提炼工作方法的人', route: '先看 methods 和 debates，再回到支撑这些判断的正文段落。', focus: ['判断动作', '适用边界', '回文验证'] },
+      { audience: '准备完整精读的人', route: '先按 routes 确定阅读顺序，再逐章深读最关键的转折段落。', focus: ['阅读顺序', '关键转折', '深读章节'] },
+    ];
+  }
+
+  return [
+    { audience: '先判断值不值得读的人', route: `先看 ${safeTitle} 的总览、争议和 routes，再决定是否回原书。`, focus: ['主题入口', '争议边界', '阅读价值'] },
+    { audience: '已经听过这本书但没读过原书的人', route: '先看 knowledgeMap 和 debates，建立阅读框架后再去找原书章节。', focus: ['阅读框架', '误读风险', '回原书点位'] },
+    { audience: '想快速进入作者问题意识的人', route: '先抓 oneLiner、about 和 parts，再顺着 routes 决定下一步是速读还是精读。', focus: ['主问题', '理解切口', '下一步读法'] },
+  ];
+}
+
+function buildFallbackTimeline(input, title) {
+  const safeTitle = title || input.title || '这本书';
+  if (getSourceStrategy(input) === 'upload') {
+    return [
+      { year: '第一步', title: '先抓正文主命题', desc: `先判断 ${safeTitle} 在正文里反复推进的到底是什么问题。` },
+      { year: '第二步', title: '再看结构推进', desc: '把章节压成推进链，找出作者论证真正发生转折的地方。' },
+      { year: '第三步', title: '提炼判断动作', desc: '把重复出现的观察角度、判断动作和方法框架收成可迁移工具。' },
+      { year: '第四步', title: '按路线回原文', desc: '根据阅读目标回到最关键的章节和段落，而不是平均用力。' },
+    ];
+  }
+
+  return [
+    { year: '入口', title: '先确认主题线索', desc: `先看公开资料如何描述 ${safeTitle} 的核心问题。` },
+    { year: '结构', title: '再整理公开框架', desc: '把能确认的结构线索压成阅读模块，而不是伪造章节推进。' },
+    { year: '边界', title: '随后识别争议与误读', desc: '先知道这本书容易被过度简化的地方。' },
+    { year: '回原书', title: '最后决定是否深读', desc: '阅读地图帮助判断入口，但最终仍要靠原书验证。' },
+  ];
+}
+
+function buildFallbackSummary(input, fallbackSections, quoteMode) {
+  const segments = [];
+  if (getSourceStrategy(input) === 'upload') {
+    segments.push('基于上传正文优先生成，并用补充线索校正书目事实。');
+  } else {
+    segments.push('基于书名与公开 grounding 线索生成，采用保守表达，不伪装成原书全文解析。');
+  }
+  if (fallbackSections.length > 0) {
+    segments.push(`partial-fallback: ${fallbackSections.join(', ')}`);
+  }
+  if (quoteMode === 'judgment-based') {
+    segments.push('quotes=judgment-based');
+  }
+  if (getSourceStrategy(input) === 'catalog') {
+    segments.push('grounding-only');
+  }
+  return segments.join(' ');
+}
+
 function sendGenerationUnavailable(response, detail) {
   response.status(503).json({
     error: '当前无法生成阅读地图。',
@@ -373,84 +730,261 @@ function sendGenerationUnavailable(response, detail) {
 
 function normalizeGeneratedMap(raw, input) {
   const fallback = buildPrototypeMap(input);
+  const fallbackTexts = buildSectionFallbackTexts(input, raw?.title || input.title);
+  const fallbackSections = [];
   const sectionOrdinals = ['第一部分', '第二部分', '第三部分', '第四部分', '第五部分', '第六部分'];
   const overviewOrdinals = ['第一层', '第二层', '第三层', '第四层'];
-  const normalizedOverview =
-    raw?.overview?.cards?.length >= 4
-      ? {
-          ...raw.overview,
-          cards: raw.overview.cards.slice(0, 4).map((card, index) => ({
-            ...card,
-            layer: overviewOrdinals[index],
-            points: Array.isArray(card?.points) && card.points.length >= 3
-              ? card.points.slice(0, 3)
-              : [`抓住 ${trimText(card?.title) || '这一层'}`, '看清它为何重要', '记住最该带走的判断'],
-          })),
-        }
-      : fallback.overview;
-  const normalizedParts =
-    raw?.parts?.length >= 4
-      ? raw.parts.slice(0, 6).map((part, index) => {
-          const title = trimText(part?.title) || `${input.title} 的关键模块`;
-          const navDesc = trimText(part?.navDesc) || trimText(part?.task) || trimText(part?.intro) || `这一部分最该读的，是 ${title} 到底怎样影响全书判断。`;
-          const intro = trimText(part?.intro) || `${title} 不是普通章节概括，而是这本书里必须先读懂的一段结构。`;
-          const task = trimText(part?.task) || `先搞清 ${title} 在整本书里到底承担什么任务。`;
-          const position = trimText(part?.position) || `把这一部分当作整本书的关键转折点来看。`;
-          const takeaways = Array.isArray(part?.takeaways) && part.takeaways.length >= 3
-            ? part.takeaways.slice(0, 3)
-            : [navDesc, task, position].map((item) => trimText(item)).filter(Boolean).slice(0, 3);
-          const chapters = Array.isArray(part?.chapters) && part.chapters.length >= 3
-            ? part.chapters.slice(0, 4)
-            : takeaways.slice(0, 3);
-          const tags = Array.isArray(part?.tags) && part.tags.length
-            ? part.tags.slice(0, 3)
-            : [title, trimText(part?.subtitle), chapters[0]].filter(Boolean).slice(0, 3);
-
+  const normalizedOverview = raw?.overview?.cards?.length >= 4
+    ? {
+        ...raw.overview,
+        title: trimText(raw?.overview?.title) || fallback.overview.title,
+        subtitle: trimText(raw?.overview?.subtitle) || fallback.overview.subtitle,
+        cards: raw.overview.cards.slice(0, 4).map((card, index) => {
+          const fallbackCard = fallback.overview.cards[index];
+          const title = trimText(card?.title);
+          const desc = trimText(card?.desc);
+          const useFallbackCard = isWeakOverviewCard(card);
+          if (useFallbackCard) {
+            fallbackSections.push('overview');
+          }
           return {
-            ...part,
-            id: part?.id || `part-${index + 1}`,
-            title,
-            subtitle: trimText(part?.subtitle) || sectionOrdinals[index] || `第${index + 1}部分`,
-            navDesc,
-            intro,
-            tags,
-            task,
-            takeaways,
-            chapters,
-            position,
+            ...(useFallbackCard ? fallbackCard : card),
+            layer: overviewOrdinals[index],
+            title: useFallbackCard ? fallbackCard.title : title,
+            desc: useFallbackCard ? fallbackCard.desc : desc,
+            points: Array.isArray(card?.points) && card.points.length >= 3
+              ? card.points.map((item) => trimText(item)).filter(Boolean).slice(0, 3)
+              : fallbackCard.points,
+            color: trimText(card?.color) || fallbackCard.color,
           };
-        })
-      : fallback.parts;
+        }),
+      }
+    : (() => {
+        fallbackSections.push('overview');
+        return fallback.overview;
+      })();
+  const normalizedParts = raw?.parts?.length >= 4
+    ? raw.parts.slice(0, 6).map((part, index) => {
+        const fallbackPart = fallback.parts[index] || fallback.parts[fallback.parts.length - 1];
+        const title = trimText(part?.title);
+        const useFallbackTitle = !title || isGenericPartTitle(title);
+        const navDesc = trimText(part?.navDesc) || trimText(part?.task) || trimText(part?.intro) || fallbackTexts.partNav;
+        const intro = trimText(part?.intro) || `${useFallbackTitle ? fallbackTexts.partTitle : title} 不是普通章节概括，而是这本书里值得先读懂的一段结构。`;
+        const task = trimText(part?.task) || fallbackTexts.partTask;
+        const position = trimText(part?.position) || fallbackTexts.partPosition;
+        const takeaways = Array.isArray(part?.takeaways) && part.takeaways.length >= 3
+          ? part.takeaways.map((item) => trimText(item)).filter(Boolean).slice(0, 3)
+          : [navDesc, task, position].filter(Boolean).slice(0, 3);
+        const chapters = Array.isArray(part?.chapters) && part.chapters.length >= 3
+          ? part.chapters.map((item) => trimText(item)).filter(Boolean).slice(0, 4)
+          : takeaways.slice(0, 3);
+        const tags = Array.isArray(part?.tags) && part.tags.length
+          ? part.tags.map((item) => trimText(item)).filter(Boolean).slice(0, 3)
+          : [useFallbackTitle ? fallbackPart.title : title, trimText(part?.subtitle), chapters[0]].filter(Boolean).slice(0, 3);
+        const normalizedPart = {
+          ...part,
+          id: part?.id || `part-${index + 1}`,
+          title: useFallbackTitle ? fallbackPart.title : title,
+          subtitle: sectionOrdinals[index] || `第${index + 1}部分`,
+          navDesc,
+          intro,
+          tags,
+          task,
+          takeaways,
+          chapters,
+          position,
+        };
+        if (isWeakPartItem(normalizedPart, input)) {
+          fallbackSections.push('parts');
+          return {
+            ...fallbackPart,
+            id: normalizedPart.id,
+            subtitle: sectionOrdinals[index] || fallbackPart.subtitle,
+          };
+        }
+        return normalizedPart;
+      })
+    : (() => {
+        fallbackSections.push('parts');
+        return fallback.parts;
+      })();
+  const normalizedKnowledgeMap =
+    raw?.knowledgeMap?.areas?.length >= 4 && raw?.knowledgeMap?.tools?.length >= 4
+      ? {
+          areas: raw.knowledgeMap.areas.slice(0, 6).map((area, index) => ({
+            title: trimText(area?.title) || buildFallbackKnowledgeMap(input, raw?.title || input.title).areas[index % 4].title,
+            status: trimText(area?.status) || '已整理',
+            progress: Number(area?.progress) > 0 ? Math.min(Number(area.progress), 100) : 55 + index * 8,
+            color: trimText(area?.color) || ['bg-orange-500', 'bg-cyan-500', 'bg-emerald-500', 'bg-pink-500'][index % 4],
+            desc: trimText(area?.desc) || buildFallbackKnowledgeMap(input, raw?.title || input.title).areas[index % 4].desc,
+          })),
+          tools: raw.knowledgeMap.tools.slice(0, 6).map((tool, index) => {
+            const fallbackTool = buildFallbackKnowledgeMap(input, raw?.title || input.title).tools[index % 4];
+            return {
+              title: trimText(tool?.title) || fallbackTool.title,
+              desc: trimText(tool?.desc) || fallbackTool.desc,
+              points: Array.isArray(tool?.points) && tool.points.length >= 3
+                ? tool.points.map((item) => trimText(item)).filter(Boolean).slice(0, 3)
+                : fallbackTool.points,
+            };
+          }),
+        }
+      : (() => {
+          fallbackSections.push('knowledgeMap');
+          return buildFallbackKnowledgeMap(input, raw?.title || input.title);
+        })();
+  const normalizedTimeline = raw?.timeline?.length >= 4
+    ? raw.timeline.slice(0, 6).map((item, index) => ({
+        year: trimText(item?.year) || fallback.timeline[index % fallback.timeline.length].year,
+        title: trimText(item?.title) || buildFallbackTimeline(input, raw?.title || input.title)[index % 4].title,
+        desc: trimText(item?.desc) || buildFallbackTimeline(input, raw?.title || input.title)[index % 4].desc,
+      }))
+    : (() => {
+        fallbackSections.push('timeline');
+        return buildFallbackTimeline(input, raw?.title || input.title);
+      })();
+  let quoteMode = getSourceStrategy(input) === 'catalog' ? 'judgment-based' : null;
+  const normalizedQuotes = raw?.quotes?.length >= 2
+    ? raw.quotes.slice(0, 8).map((item, index) => {
+        const fallbackQuote = buildFallbackQuotes(input, raw?.title || input.title)[index % 4];
+        const quote = trimText(item?.quote);
+        const note = trimText(item?.note);
+        const tooWeak = isWeakQuoteItem(item, input);
+        if (tooWeak) {
+          fallbackSections.push('quotes');
+          quoteMode = 'judgment-based';
+          return fallbackQuote;
+        }
+        if (getSourceStrategy(input) === 'catalog') {
+          quoteMode = 'judgment-based';
+          return {
+            quote: quote.startsWith(fallbackTexts.quotePrefix) ? quote : `${fallbackTexts.quotePrefix}${quote.replace(/^["“”'']+|["“”'']+$/g, '')}`,
+            note: note || '基于公开线索提炼的关键判断，不代表原书逐字引文。',
+          };
+        }
+        return {
+          quote,
+          note: note || '这是从正文主判断里提炼出的阅读抓手，建议回原文核对上下文。',
+        };
+      })
+    : (() => {
+        fallbackSections.push('quotes');
+        quoteMode = 'judgment-based';
+        return buildFallbackQuotes(input, raw?.title || input.title);
+      })();
+  const normalizedDebates = raw?.debates?.length >= 1
+    ? raw.debates.slice(0, 4).map((item, index) => {
+      const fallbackDebate = buildFallbackDebates(input, raw?.title || input.title)[index % 2];
+      const title = trimText(item?.title) || fallbackDebate.title;
+      const value = trimText(item?.value);
+      const reservation = trimText(item?.reservation);
+        if (value.length < 18 || reservation.length < 18) {
+          fallbackSections.push('debates');
+          return fallbackDebate;
+        }
+        return {
+          title,
+          value,
+          reservation,
+        };
+      })
+    : (() => {
+        fallbackSections.push('debates');
+        return buildFallbackDebates(input, raw?.title || input.title);
+      })();
+  const normalizedRoutes = raw?.routes?.length >= 2
+    ? raw.routes.slice(0, 4).map((item, index) => {
+      const fallbackRoute = buildFallbackRoutes(input, raw?.title || input.title)[index % 3];
+      const route = trimText(item?.route);
+        const focus = Array.isArray(item?.focus) ? item.focus.map((point) => trimText(point)).filter(Boolean).slice(0, 3) : [];
+        const audience = trimText(item?.audience) || fallbackRoute.audience;
+        const looksTooApplied = /(落地|执行|应用|实操|打法|增长|运营|产品化)/.test(route) && getSourceStrategy(input) === 'catalog';
+        if (!route || focus.length < 2 || looksTooApplied) {
+          fallbackSections.push('routes');
+          return fallbackRoute;
+        }
+        return {
+          audience,
+          route,
+          focus,
+        };
+      })
+    : (() => {
+        fallbackSections.push('routes');
+        return buildFallbackRoutes(input, raw?.title || input.title);
+      })();
+  let normalizedMethods;
+  if (raw?.methods?.items?.length >= 4 && raw?.methods?.categories?.length >= 2) {
+    const structuralFallbackMethods = extendMethodsFallback({
+      ...fallback,
+      knowledgeMap: normalizedKnowledgeMap,
+      parts: normalizedParts,
+    });
+    const categories = raw.methods.categories.map((item) => trimText(item)).filter(Boolean).slice(0, 6);
+    const safeCategories = categories.length ? categories : structuralFallbackMethods.categories;
+    const weakMethodCount = raw.methods.items.filter((item) => isWeakMethodItem(item, input)).length;
+    if (raw.methods.items.length < 4 || weakMethodCount > 2) {
+      fallbackSections.push('methods');
+      normalizedMethods = extendMethodsFallback({
+        ...fallback,
+        knowledgeMap: normalizedKnowledgeMap,
+        parts: normalizedParts,
+        methods: raw.methods,
+      });
+    } else {
+      normalizedMethods = {
+        categories: safeCategories,
+        items: renumberMethodItems(raw.methods.items.slice(0, 16).map((item, index) => {
+          const title = trimText(item?.title);
+          const desc = trimText(item?.desc);
+          const fallbackMethod = structuralFallbackMethods.items[index % 16];
+          if (isWeakMethodItem(item, input)) {
+            fallbackSections.push('methods');
+            return fallbackMethod;
+          }
+          return {
+            id: String(index + 1).padStart(2, '0'),
+            category: safeCategories.includes(trimText(item?.category)) ? trimText(item?.category) : safeCategories[0] || fallbackTexts.methodCategory,
+            title,
+            desc,
+          };
+        })),
+      };
+    }
+  } else {
+    fallbackSections.push('methods');
+    normalizedMethods = extendMethodsFallback({
+      ...fallback,
+      knowledgeMap: normalizedKnowledgeMap,
+      parts: normalizedParts,
+    });
+  }
+
+  const dedupedFallbackSections = [...new Set(fallbackSections)];
   return {
     ...fallback,
     ...raw,
     overview: normalizedOverview,
-    knowledgeMap:
-      raw?.knowledgeMap?.areas?.length >= 4 && raw?.knowledgeMap?.tools?.length >= 3
-        ? raw.knowledgeMap
-        : fallback.knowledgeMap,
+    knowledgeMap: normalizedKnowledgeMap,
     parts: normalizedParts,
-    methods:
-      raw?.methods?.items?.length >= 12 && raw?.methods?.categories?.length >= 3
-        ? raw.methods
-        : fallback.methods,
-    timeline: raw?.timeline?.length >= 4 ? raw.timeline : fallback.timeline,
-    quotes: raw?.quotes?.length >= 4 ? raw.quotes : fallback.quotes,
-    debates: raw?.debates?.length >= 2 ? raw.debates : fallback.debates,
-    routes: raw?.routes?.length >= 3 ? raw.routes : fallback.routes,
+    methods: normalizedMethods,
+    timeline: normalizedTimeline,
+    quotes: normalizedQuotes,
+    debates: normalizedDebates,
+    routes: normalizedRoutes,
     id: `generated-${toSlug(raw?.title || input.title || 'map')}-${Date.now()}`,
     title: raw?.title || input.title,
-    author: raw?.author || input.author || fallback.author || '',
+    author: hasKnownAuthor(raw?.author) ? raw.author : (input.author || fallback.author || ''),
     aliases: [raw?.title || input.title].filter(Boolean),
     saves: 0,
     status: 'has_map',
     visibility: 'private',
     sourceMeta: {
       kind: input.sourceKind === 'upload' ? 'upload' : 'generated',
-      mode: input.content ? 'source-grounded' : 'title-only',
-      summary: input.content
-        ? '基于上传内容和补充书目线索做出的结构化阅读地图。'
-        : '基于书名与网页检索线索生成的 reading map，优先保证结构完整与可读性。',
+      mode: raw?.sourceMeta?.mode === 'prototype-fallback' ? 'prototype-fallback' : getSourceMode(input),
+      summary: raw?.sourceMeta?.mode === 'prototype-fallback'
+        ? raw?.sourceMeta?.summary || fallback.sourceMeta.summary
+        : buildFallbackSummary(input, dedupedFallbackSections, quoteMode),
     },
   };
 }
@@ -474,8 +1008,11 @@ function buildEnrichmentPrompt(input, groundingContext, analysisBrief, currentMa
    - debates: 2 到 4 条
    - routes: 3 到 4 条
 
+来源策略：
+${buildPromptStrategyNotes(input, 'enrichment')}
+
 书名：${input.title}
-作者：${input.author || 'Unknown'}
+作者：${input.author || '待确认'}
 
 ${editorialStyleGuide}
 ${benchmarkDensityGuide}
@@ -598,10 +1135,13 @@ function isGenericPartTitle(title) {
   return cleaned.length < 4 || cleaned.includes('标题') || cleaned.includes('模块') || genericPartTitlePattern.test(cleaned);
 }
 
-function isWeakMethodItem(item) {
+function isWeakMethodItem(item, input) {
   const title = trimText(item?.title);
   const desc = trimText(item?.desc);
-  return !title || !desc || title.length < 4 || title.includes('方法') || desc.length < 22 || genericMethodTitlePattern.test(title);
+  const looksLikeConceptLabel = /(机制|框架|体系|模型|方法论|策略|思维)/.test(title) && !/(先|再|把|用|别|看|拆|对照|确认|识别|判断|回到|压缩)/.test(title);
+  const uploadTooAbstract = getSourceStrategy(input) === 'upload' && !/(正文|章节|段落|判断|动作|线索|结构|证据)/.test(desc);
+  const catalogTooAssertive = getSourceStrategy(input) === 'catalog' && /(作者提出|书中指出|本书证明|原书告诉我们)/.test(desc);
+  return !title || !desc || title.length < 4 || title.includes('方法') || desc.length < 24 || genericMethodTitlePattern.test(title) || looksLikeConceptLabel || uploadTooAbstract || catalogTooAssertive;
 }
 
 function isWeakOverviewCard(card) {
@@ -611,36 +1151,55 @@ function isWeakOverviewCard(card) {
   return !title || !desc || isGenericPartTitle(title) || desc.length < 26 || points.length < 3;
 }
 
-function isWeakPartItem(part) {
+function isWeakPartItem(part, input) {
   const navDesc = trimText(part?.navDesc);
   const task = trimText(part?.task);
   const position = trimText(part?.position);
   const intro = trimText(part?.intro);
+  const routeToneMismatch = getSourceStrategy(input) === 'catalog' && /(章节|逐章|原文|正文证明)/.test(`${navDesc} ${task} ${position} ${intro}`);
   return (
     isGenericPartTitle(part?.title) ||
     navDesc.length < 18 ||
     task.length < 18 ||
     position.length < 18 ||
     intro.length < 40 ||
+    routeToneMismatch ||
     !Array.isArray(part?.takeaways) || part.takeaways.length < 3 ||
     !Array.isArray(part?.chapters) || part.chapters.length < 3
   );
 }
 
-function isWeakQuoteItem(item) {
+function isWeakQuoteItem(item, input) {
   const quote = trimText(item?.quote);
   const note = trimText(item?.note);
-  return !quote || quote.length < 8 || quote.length > 42 || quote.includes('关键句') || genericQuotePattern.test(quote) || note.length < 10;
+  const looksOriginalButUnsupported = getSourceStrategy(input) === 'catalog' && !quote.startsWith('关键判断：') && !/判断|入口|边界|误读/.test(quote);
+  const uploadPseudoQuote = getSourceStrategy(input) === 'upload' && quote.includes('作者认为') && note.length < 16;
+  return !quote || quote.length < 8 || quote.length > 46 || quote.includes('关键句') || genericQuotePattern.test(quote) || note.length < 10 || looksOriginalButUnsupported || uploadPseudoQuote;
 }
 
-function collectQualityIssues(map) {
+function isWeakRouteItem(item, input) {
+  const route = trimText(item?.route);
+  const focus = Array.isArray(item?.focus) ? item.focus.filter(Boolean) : [];
+  const looksTooApplied = getSourceStrategy(input) === 'catalog' && /(落地|执行|应用|打法|增长|运营|实操)/.test(route);
+  return !route || route.length < 16 || focus.length < 2 || looksTooApplied;
+}
+
+function isWeakDebateItem(item, input) {
+  const value = trimText(item?.value);
+  const reservation = trimText(item?.reservation);
+  const title = trimText(item?.title);
+  const catalogTooSoft = getSourceStrategy(input) === 'catalog' && !/(边界|误读|保留|适用|条件)/.test(`${title} ${reservation}`);
+  return value.length < 14 || reservation.length < 14 || !title || catalogTooSoft;
+}
+
+function collectQualityIssues(map, input) {
   const issues = [];
   const weakPartTitles = (map?.parts || []).map((item) => item?.title).filter((title) => isGenericPartTitle(title));
-  const weakPartCount = (map?.parts || []).filter((item) => isWeakPartItem(item)).length;
-  const weakMethodCount = (map?.methods?.items || []).filter((item) => isWeakMethodItem(item)).length;
-  const weakQuoteCount = (map?.quotes || []).filter((item) => isWeakQuoteItem(item)).length;
-  const weakRouteCount = (map?.routes || []).filter((item) => !trimText(item?.route) || !Array.isArray(item?.focus) || item.focus.length < 2).length;
-  const weakDebateCount = (map?.debates || []).filter((item) => trimText(item?.value).length < 12 || trimText(item?.reservation).length < 12).length;
+  const weakPartCount = (map?.parts || []).filter((item) => isWeakPartItem(item, input)).length;
+  const weakMethodCount = (map?.methods?.items || []).filter((item) => isWeakMethodItem(item, input)).length;
+  const weakQuoteCount = (map?.quotes || []).filter((item) => isWeakQuoteItem(item, input)).length;
+  const weakRouteCount = (map?.routes || []).filter((item) => isWeakRouteItem(item, input)).length;
+  const weakDebateCount = (map?.debates || []).filter((item) => isWeakDebateItem(item, input)).length;
   const weakOverviewCount = (map?.overview?.cards || []).filter((card) => isWeakOverviewCard(card)).length;
   const invalidOverviewLayerCount = (map?.overview?.cards || []).filter((card, index) => trimText(card?.layer) !== ['第一层', '第二层', '第三层', '第四层'][index]).length;
   const overviewPlaceholder = /总览标题|总览副标题|标题|副标题/.test(trimText(map?.overview?.title)) || /总览标题|总览副标题|标题|副标题/.test(trimText(map?.overview?.subtitle));
@@ -663,13 +1222,25 @@ function collectQualityIssues(map) {
     issues.push(`方法卡不足或不够硬：当前 ${map?.methods?.items?.length || 0} 条，其中较弱 ${weakMethodCount} 条。`);
   }
   if (!map?.quotes || map.quotes.length < 5 || weakQuoteCount > 2) {
-    issues.push(`关键句不够像可摘记原句：当前 ${map?.quotes?.length || 0} 条，其中较弱 ${weakQuoteCount} 条。`);
+    issues.push(getSourceStrategy(input) === 'upload'
+      ? `关键句不够像正文支撑下的可摘记短句或关键判断：当前 ${map?.quotes?.length || 0} 条，其中较弱 ${weakQuoteCount} 条。`
+      : `关键句看起来过于像原书原句或来源不够保守：当前 ${map?.quotes?.length || 0} 条，其中较弱 ${weakQuoteCount} 条。`);
   }
   if (!map?.routes || map.routes.length < 3 || weakRouteCount > 0) {
-    issues.push(`阅读路线不够清晰：当前 ${map?.routes?.length || 0} 条，其中较弱 ${weakRouteCount} 条。`);
+    issues.push(getSourceStrategy(input) === 'upload'
+      ? `阅读路线不够像按正文结构推进的读法：当前 ${map?.routes?.length || 0} 条，其中较弱 ${weakRouteCount} 条。`
+      : `阅读路线更像“如何应用理论”而不是“如何进入这本书”：当前 ${map?.routes?.length || 0} 条，其中较弱 ${weakRouteCount} 条。`);
   }
   if (!map?.debates || map.debates.length < 2 || weakDebateCount > 0) {
-    issues.push(`争议与边界不够锋利：当前 ${map?.debates?.length || 0} 条，其中较弱 ${weakDebateCount} 条。`);
+    issues.push(getSourceStrategy(input) === 'upload'
+      ? `争议与边界不够锋利：当前 ${map?.debates?.length || 0} 条，其中较弱 ${weakDebateCount} 条。`
+      : `争议与边界不够像公开争议、适用边界和误读风险：当前 ${map?.debates?.length || 0} 条，其中较弱 ${weakDebateCount} 条。`);
+  }
+  if (getSourceStrategy(input) === 'upload' && trimText(input?.content).length > 4000 && weakPartCount > 1) {
+    issues.push('upload 模式下正文结构利用仍偏弱，parts 还不够像章节压缩后的阅读模块。');
+  }
+  if (getSourceStrategy(input) === 'catalog' && (map?.quotes || []).some((item) => !trimText(item?.quote).startsWith('关键判断：'))) {
+    issues.push('catalog 模式下 quotes 仍像原书原句，需要统一收口成关键判断口径。');
   }
 
   return issues;
@@ -704,8 +1275,11 @@ function buildQualityPolishPrompt(input, groundingContext, analysisBrief, curren
 2. 只重写薄弱区块，不要把整张地图改散。
 3. 标题必须有编辑判断，不要泛泛复述主题。
 4. 方法卡必须像可迁移的判断工具。
-5. 关键句必须像能被读者摘记的硬句，不要写成说明句。
+5. 关键句必须诚实：upload 可以写正文短句或关键判断；catalog 只能写关键判断，不能伪装成原书摘录。
 6. 禁止引入与这本书无直接关联的外国案例、书外事件或噪音实体，除非补充线索明确支持。
+
+来源策略：
+${buildPromptStrategyNotes(input, 'polish')}
 
 当前审稿意见：
 ${issues.map((item, index) => `${index + 1}. ${item}`).join('\n')}
@@ -760,9 +1334,10 @@ ${issues.map((item, index) => `${index + 1}. ${item}`).join('\n')}
 - parts 保持 4 到 6 个，但把标题改成更有判断的名字。
 - parts.subtitle 固定写“第一部分 / 第二部分 ...”。
 - knowledgeMap.tools 至少 4 个，且要更像作者在这本书里真正提供的观察工具。
-- quotes 目标 5 到 8 条，优先使用补充线索里的候选原句或高度贴近原意的关键判断。
+- quotes 目标 5 到 8 条。upload 可用正文短句；catalog 必须写成“关键判断：...”口径，不要伪装成原书原句。
 - routes 保持 3 到 4 条，focus 每条至少 2 个点。
 - debates 每条都要写清“为什么今天仍值得带走”和“为什么还要保留看”。
+- catalog 的 routes 要更像“如何读这本书”；upload 的 routes 要更像“如何按正文结构读这本书”。
 
 书名：${input.title}
 作者：${input.author || 'Unknown'}
@@ -782,7 +1357,7 @@ ${JSON.stringify(currentMap).slice(0, 14000)}
 }
 
 async function polishMapQuality(input, groundingContext, analysisBrief, currentMap) {
-  const issues = collectQualityIssues(currentMap);
+  const issues = collectQualityIssues(currentMap, input);
   const possibleNoise = [
     ...(currentMap?.timeline || []).map((item) => `${item?.title || ''} ${item?.desc || ''}`),
     ...(currentMap?.quotes || []).map((item) => `${item?.quote || ''} ${item?.note || ''}`),
@@ -1035,7 +1610,7 @@ async function enrichEditorialDepth(input, groundingContext, analysisBrief, curr
   let nextMap = { ...currentMap };
 
   const weakOverviewCount = (nextMap?.overview?.cards || []).filter((card) => isWeakOverviewCard(card)).length;
-  const weakPartCount = (nextMap?.parts || []).filter((item) => isWeakPartItem(item)).length;
+  const weakPartCount = (nextMap?.parts || []).filter((item) => isWeakPartItem(item, input)).length;
 
   if (weakOverviewCount > 0 || trimText(nextMap?.oneLiner?.zh).length < 20 || trimText(nextMap?.about?.zh).length < 60) {
     try {
@@ -1111,7 +1686,7 @@ async function enrichEditorialDepth(input, groundingContext, analysisBrief, curr
     }
   }
 
-  const weakMethods = (nextMap?.methods?.items || []).filter((item) => isWeakMethodItem(item));
+  const weakMethods = (nextMap?.methods?.items || []).filter((item) => isWeakMethodItem(item, input));
   if (weakMethods.length > 2) {
     try {
       const polishedMethods = await callSiliconFlow({
@@ -1134,7 +1709,7 @@ async function enrichEditorialDepth(input, groundingContext, analysisBrief, curr
   return nextMap;
 }
 
-async function enrichSparseMap(input, groundingContext, analysisBrief, currentMap) {
+async function enrichSparseMap(input, groundingContext, analysisBrief, currentMap, timeoutMs = SPARSE_STAGE_TIMEOUT_MS) {
   const needsEnrichment =
     !currentMap?.knowledgeMap?.tools || currentMap.knowledgeMap.tools.length < 4 ||
     !currentMap?.parts || currentMap.parts.length < 4 ||
@@ -1152,6 +1727,7 @@ async function enrichSparseMap(input, groundingContext, analysisBrief, currentMa
       maxTokens: 2200,
       temperature: 0.25,
       responseFormat: 'json_object',
+      timeoutMs,
     });
 
     return {
@@ -1196,7 +1772,160 @@ function deepCleanChineseText(value) {
   return value;
 }
 
-function extractJsonCandidate(text) {
+function extractStringField(segment, key) {
+  const match = String(segment || '').match(new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, 'i'));
+  if (!match) {
+    return '';
+  }
+  return trimText(match[1].replace(/\\"/g, '"'));
+}
+
+function extractLooseStringField(segment, key) {
+  const strict = extractStringField(segment, key);
+  if (strict) {
+    return strict;
+  }
+  const match = String(segment || '').match(new RegExp(`"${key}"\\s*:\\s*"([^"\\n\\r]{2,120})`, 'i'));
+  return match ? trimText(match[1]) : '';
+}
+
+function sliceKeySegment(text, key, nextKeys = [], aliases = []) {
+  const source = String(text || '');
+  const candidateKeys = [key, ...aliases].filter(Boolean);
+  let keyIndex = -1;
+  let matchedKey = '';
+  candidateKeys.some((candidateKey) => {
+    const index = source.search(new RegExp(`"${candidateKey}"\\s*:`, 'i'));
+    if (index !== -1) {
+      keyIndex = index;
+      matchedKey = candidateKey;
+      return true;
+    }
+    return false;
+  });
+  if (keyIndex === -1) {
+    return '';
+  }
+
+  let endIndex = source.length;
+  nextKeys.forEach((nextKey) => {
+    const nextAliases = Array.isArray(nextKey) ? nextKey : [nextKey];
+    nextAliases.forEach((nextAlias) => {
+      const candidateIndex = source.slice(keyIndex + matchedKey.length).search(new RegExp(`"${nextAlias}"\\s*:`, 'i'));
+      if (candidateIndex !== -1) {
+        const absoluteIndex = keyIndex + matchedKey.length + candidateIndex;
+        if (absoluteIndex < endIndex) {
+          endIndex = absoluteIndex;
+        }
+      }
+    });
+  });
+
+  return source.slice(keyIndex, endIndex);
+}
+
+function extractLooseStringArray(segment, limit) {
+  const normalizedSegment = String(segment || '');
+  const isUsefulSeedText = (value) => {
+    const cleaned = trimText(String(value || ''))
+      .replace(/^[:：,\-_\s"'`]+|[:：,\-_\s"'`]+$/g, '');
+    return cleaned.length >= 2 && !/^[,.:;'"`\-\s]+$/.test(cleaned) && !/^(part\d+|title|desc|quote|route|method)$/i.test(cleaned);
+  };
+  const directMatch = normalizedSegment.match(/\[[\s\S]*\]/);
+  if (directMatch) {
+    try {
+      const parsed = JSON.parse(directMatch[0].replace(/,\s*([}\]])/g, '$1'));
+      if (Array.isArray(parsed)) {
+        return parsed
+          .flatMap((item) => (typeof item === 'string' ? [item] : Object.values(item || {})))
+          .map((item) => trimText(item))
+          .filter(isUsefulSeedText)
+          .slice(0, limit);
+      }
+    } catch (_error) {
+      // fall through to lightweight regex extraction
+    }
+  }
+
+  const values = [];
+  const regex = /"((?:\\.|[^"\\])*)"(?=\s*(?:,|\]|$))/g;
+  let match;
+  while ((match = regex.exec(normalizedSegment))) {
+    const value = trimText(match[1].replace(/\\"/g, '"'));
+    if (isUsefulSeedText(value)) {
+      values.push(value);
+    }
+    if (values.length >= limit) {
+      break;
+    }
+  }
+  return values;
+}
+
+function repairCompactSeedJson(text) {
+  const cleaned = stripCodeFence(text)
+    .replace(/[\u0000-\u0019]+/g, ' ')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .trim();
+  const orderedKeys = ['oneLiner', 'about', 'overview', 'parts', 'methods', 'quotes', 'routes'];
+  const overviewSegment = sliceKeySegment(cleaned, 'overview', [['parts', 'part'], 'methods', ['quotes', 'quote'], ['routes', 'route']]);
+  const partsSegment = sliceKeySegment(cleaned, 'parts', ['methods', ['quotes', 'quote'], ['routes', 'route']], ['part']);
+  const methodsSegment = sliceKeySegment(cleaned, 'methods', [['quotes', 'quote'], ['routes', 'route']]);
+  const quotesSegment = sliceKeySegment(cleaned, 'quotes', [['routes', 'route']], ['quote']);
+  const routesSegment = sliceKeySegment(cleaned, 'routes', [], ['route']);
+
+  const repaired = {
+    oneLiner: extractLooseStringField(cleaned, 'oneLiner'),
+    about: extractLooseStringField(cleaned, 'about'),
+    overview: extractLooseStringArray(overviewSegment, 16).slice(0, 4),
+    parts: extractLooseStringArray(partsSegment, 16).slice(0, 4),
+    methods: extractLooseStringArray(methodsSegment, 16).slice(0, 4),
+    quotes: extractLooseStringArray(quotesSegment, 8).slice(0, 2),
+    routes: extractLooseStringArray(routesSegment, 8).slice(0, 2),
+  };
+
+  if (repaired.overview.length === 0) {
+    repaired.overview = [extractLooseStringField(overviewSegment, 'overview')].filter(Boolean);
+  }
+  if (repaired.parts.length === 0) {
+    repaired.parts = [
+      extractLooseStringField(partsSegment, 'parts'),
+      extractLooseStringField(partsSegment, 'part'),
+    ].filter(Boolean);
+  }
+  if (repaired.methods.length === 0) {
+    repaired.methods = [extractLooseStringField(methodsSegment, 'methods')].filter(Boolean);
+  }
+  if (repaired.quotes.length === 0) {
+    repaired.quotes = [
+      extractLooseStringField(quotesSegment, 'quotes'),
+      extractLooseStringField(quotesSegment, 'quote'),
+    ].filter(Boolean);
+  }
+  if (repaired.routes.length === 0) {
+    repaired.routes = [
+      extractLooseStringField(routesSegment, 'routes'),
+      extractLooseStringField(routesSegment, 'route'),
+    ].filter(Boolean);
+  }
+
+  if (!repaired.oneLiner) {
+    repaired.oneLiner = repaired.overview[0] || repaired.parts[0] || repaired.methods[0] || '';
+  }
+  if (!repaired.about) {
+    repaired.about = repaired.overview.slice(0, 2).join('，') || repaired.parts.slice(0, 2).join('，');
+  }
+
+  const populatedFieldCount = orderedKeys.filter((key) => {
+    const value = repaired[key];
+    return Array.isArray(value) ? value.length > 0 : Boolean(value);
+  }).length;
+
+  return populatedFieldCount >= 3 ? repaired : null;
+}
+
+function extractJsonCandidate(text, repairMode = '') {
   const cleaned = stripCodeFence(text);
   const candidates = [cleaned];
   const objectStart = cleaned.indexOf('{');
@@ -1234,13 +1963,29 @@ function extractJsonCandidate(text) {
     }
   }
 
+  if (repairMode === 'compact-seed') {
+    const repaired = repairCompactSeedJson(cleaned);
+    if (repaired) {
+      return repaired;
+    }
+  }
+
   throw new SyntaxError(`Unable to parse model JSON. Preview: ${cleaned.slice(0, 240)}`);
 }
 
-async function callSiliconFlow({ prompt, maxTokens = 5000, temperature = 0.35, responseFormat = 'json_object', model = SILICONFLOW_MODEL }) {
+async function callSiliconFlow({
+  prompt,
+  maxTokens = 5000,
+  temperature = 0.35,
+  responseFormat = 'json_object',
+  model = SILICONFLOW_MODEL,
+  timeoutMs = SILICONFLOW_TIMEOUT_MS,
+  jsonRepairMode = '',
+}) {
+  const supportsThinkingToggle = /^(Qwen\/Qwen3|tencent\/Hunyuan-A13B-Instruct|deepseek-ai\/DeepSeek-V3\.(1|2)|zai-org\/GLM-(5V-Turbo|4\.[56]V))/.test(model);
   const response = await fetch(`${SILICONFLOW_BASE_URL}/chat/completions`, {
     method: 'POST',
-    signal: AbortSignal.timeout(SILICONFLOW_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
     headers: {
       Authorization: `Bearer ${SILICONFLOW_API_KEY}`,
       'Content-Type': 'application/json',
@@ -1250,6 +1995,7 @@ async function callSiliconFlow({ prompt, maxTokens = 5000, temperature = 0.35, r
       stream: false,
       max_tokens: maxTokens,
       temperature,
+      enable_thinking: supportsThinkingToggle ? false : undefined,
       response_format: responseFormat === 'json_object' ? { type: 'json_object' } : undefined,
       messages: [
         {
@@ -1277,7 +2023,7 @@ async function callSiliconFlow({ prompt, maxTokens = 5000, temperature = 0.35, r
     throw new Error('SiliconFlow returned an empty response.');
   }
 
-  return responseFormat === 'json_object' ? extractJsonCandidate(content) : content.trim();
+  return responseFormat === 'json_object' ? extractJsonCandidate(content, jsonRepairMode) : content.trim();
 }
 
 async function translateMapToEnglish(map) {
@@ -1324,11 +2070,12 @@ async function searchTavily(query, options = {}) {
     searchDepth = 'basic',
     maxResults = 5,
     includeRawContent = false,
+    timeoutMs = TAVILY_TIMEOUT_MS,
   } = options;
 
   const response = await fetch(TAVILY_BASE_URL, {
     method: 'POST',
-    signal: AbortSignal.timeout(TAVILY_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
     headers: {
       'Content-Type': 'application/json',
     },
@@ -1352,7 +2099,7 @@ async function searchTavily(query, options = {}) {
   return Array.isArray(payload.results) ? payload.results : [];
 }
 
-async function searchGoogleBooks(query, maxResults = 5) {
+async function searchGoogleBooks(query, maxResults = 5, timeoutMs = GOOGLE_BOOKS_TIMEOUT_MS) {
   if (!String(query || '').trim()) {
     return [];
   }
@@ -1363,7 +2110,7 @@ async function searchGoogleBooks(query, maxResults = 5) {
   url.searchParams.set('printType', 'books');
 
   const response = await fetch(url, {
-    signal: AbortSignal.timeout(GOOGLE_BOOKS_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!response.ok) {
@@ -1416,7 +2163,7 @@ function buildGoogleCandidates(query, googleItems) {
       title,
       author,
       cover,
-      oneLiner: { zh: volumeInfo.description ? String(volumeInfo.description).slice(0, 120) : `来自全网检索，可继续消耗积分生成《${title}》地图。` },
+      oneLiner: { zh: volumeInfo.description ? String(volumeInfo.description).slice(0, 120) : `来自全网检索，可继续生成《${title}》阅读地图。` },
       saves: 0,
       status: 'no_map_paid',
       aliases: [title, ...(volumeInfo.subtitle ? [volumeInfo.subtitle] : [])],
@@ -1424,6 +2171,7 @@ function buildGoogleCandidates(query, googleItems) {
       firstPublishYear: volumeInfo.publishedDate ? Number(String(volumeInfo.publishedDate).slice(0, 4)) : undefined,
       source: 'catalog',
       matchReason: volumeInfo.categories?.[0] || '来自 Google Books 书籍元数据。',
+      matchStrength: scoreCandidateTitleMatch(query, title),
     };
   });
 }
@@ -1448,6 +2196,7 @@ function buildOpenLibraryCandidates(query, docs) {
       firstPublishYear: doc.first_publish_year,
       source: 'openlibrary',
       matchReason: doc.publisher?.[0] || '来自 Open Library 书目元数据。',
+      matchStrength: scoreCandidateTitleMatch(query, title),
     };
   });
 }
@@ -1554,6 +2303,105 @@ function buildGroundingDossier(results) {
   return `${sourceBlock}\n\n候选原句（若适合，请优先保留这些短句的原始措辞）：\n${quoteBlock}`;
 }
 
+function buildCompactGroundingDossier(results) {
+  return results
+    .slice(0, 3)
+    .map((item, index) => {
+      const title = trimText(item?.title) || '网页线索';
+      const content = trimText(item?.content).slice(0, 160);
+      return `${index + 1}. ${title}${content ? `：${content}` : ''}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function extractHeadingHints(text) {
+  const seen = new Set();
+  return String(text || '')
+    .split('\n')
+    .map((line) => trimText(line.replace(/^#+\s*/, '')))
+    .filter((line) => {
+      if (!line || line.length < 4 || line.length > 48) {
+        return false;
+      }
+      if (/^[0-9]+$/.test(line)) {
+        return false;
+      }
+      if (
+        /^第[\d一二三四五六七八九十百千]+[章节部卷篇回]/.test(line) ||
+        /^chapter\s+\d+/i.test(line) ||
+        /^part\s+\d+/i.test(line) ||
+        /^section\s+\d+/i.test(line) ||
+        /^book\s+\d+/i.test(line)
+      ) {
+        return true;
+      }
+      if (/^[-*•]/.test(line)) {
+        return false;
+      }
+      return !/[。！？!?；;，,]$/.test(line);
+    })
+    .filter((line) => {
+      const key = normalize(line);
+      if (!key || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 12);
+}
+
+function collectParagraphWindow(paragraphs, startIndex, maxChars = 2400, maxParagraphs = 4) {
+  const picked = [];
+  let remaining = Math.max(400, maxChars);
+
+  for (let index = Math.max(0, startIndex); index < paragraphs.length; index += 1) {
+    const paragraph = trimText(paragraphs[index]);
+    if (!paragraph) {
+      continue;
+    }
+
+    picked.push(paragraph.slice(0, Math.min(paragraph.length, remaining)));
+    remaining -= paragraph.length + 1;
+
+    if (remaining <= 120 || picked.length >= maxParagraphs) {
+      break;
+    }
+  }
+
+  return picked.join('\n\n').slice(0, maxChars);
+}
+
+function buildCompressedUploadContent(text) {
+  const normalizedText = String(text || '').replace(/\r/g, '\n');
+  const paragraphs = splitParagraphs(normalizedText);
+  const plainText = normalizedText.replace(/\s+/g, ' ').trim();
+
+  if (paragraphs.length === 0) {
+    return plainText.slice(0, UPLOAD_COMPRESSED_TEXT_MAX_CHARS);
+  }
+
+  const midIndex = Math.max(0, Math.floor(paragraphs.length / 2) - 1);
+  const chunks = [
+    ['开头片段', collectParagraphWindow(paragraphs, 0, 900, 2)],
+    ['中段片段', collectParagraphWindow(paragraphs, midIndex, 700, 1)],
+    ['结尾片段', collectParagraphWindow(paragraphs, Math.max(0, paragraphs.length - 2), 700, 1)],
+  ].filter(([, value]) => trimText(value));
+
+  const headingHints = extractHeadingHints(normalizedText);
+  if (headingHints.length > 0) {
+    chunks.push(['标题线索', headingHints.join('\n')]);
+  }
+
+  const compressed = [
+    `全文长度：${plainText.length} 字符`,
+    ...chunks.map(([label, value]) => `${label}：\n${value}`),
+  ].join('\n\n');
+
+  return compressed.slice(0, UPLOAD_COMPRESSED_TEXT_MAX_CHARS);
+}
+
 const editorialStyleGuide = `
 写作标准：
 1. 不要写成百科简介，要写成“这本书真正值得读的地方”。
@@ -1615,22 +2463,16 @@ function buildTavilyCandidates(query, tavilyResults) {
       aliases: [title, query].filter(Boolean),
       source: 'catalog',
       matchReason: summary || '来自网页检索结果，建议继续进入制作链路。',
+      matchStrength: scoreCandidateTitleMatch(query, title),
     };
   });
 }
 
 function mergeSearchCandidates(query, localMatches, candidates) {
-  const localByTitle = new Map();
-  libraryMaps.forEach((item) => {
-    [item.title, ...(item.aliases || [])].forEach((alias) => {
-      localByTitle.set(normalize(alias), item);
-    });
-  });
-
   const merged = [...localMatches];
 
   candidates.forEach((candidate, index) => {
-    const localHit = localByTitle.get(normalize(candidate.title));
+    const localHit = findStrongLocalBookByTitle(candidate.title);
     if (localHit) {
       if (!merged.find((item) => item.id === localHit.id)) {
         merged.push(localHit);
@@ -1653,10 +2495,22 @@ function mergeSearchCandidates(query, localMatches, candidates) {
   });
 
   const deduped = dedupeBooks(merged);
-  const withKnownAuthors = deduped.filter((item) => hasKnownAuthor(item.author));
+  if (localMatches.length > 0) {
+    return deduped;
+  }
 
+  const strongExternalMatches = deduped
+    .filter((item) => item.status !== 'has_map')
+    .filter((item) => Number(item.matchStrength || 0) >= 140)
+    .sort((a, b) => Number(b.matchStrength || 0) - Number(a.matchStrength || 0));
+
+  const withKnownAuthors = strongExternalMatches.filter((item) => hasKnownAuthor(item.author));
   if (withKnownAuthors.length > 0) {
-    return withKnownAuthors;
+    return withKnownAuthors.slice(0, 6);
+  }
+
+  if (strongExternalMatches.length > 0) {
+    return strongExternalMatches.slice(0, 6);
   }
 
   return query.trim()
@@ -1677,14 +2531,14 @@ function mergeSearchCandidates(query, localMatches, candidates) {
     : deduped;
 }
 
-async function resolveBookCover(title, author, currentCover) {
+async function resolveBookCover(title, author, currentCover, timeoutMs = GOOGLE_BOOKS_TIMEOUT_MS) {
   const safeCurrentCover = String(currentCover || '').trim();
   if (safeCurrentCover && safeCurrentCover !== fallbackCover && !safeCurrentCover.includes('example.com')) {
     return safeCurrentCover;
   }
 
   try {
-    const results = await searchGoogleBooks([title, author].filter(Boolean).join(' '), 1);
+    const results = await searchGoogleBooks([title, author].filter(Boolean).join(' '), 1, timeoutMs);
     const candidate = buildGoogleCandidates(title, results)[0];
     return candidate?.cover || safeCurrentCover || fallbackCover;
   } catch (error) {
@@ -1701,9 +2555,9 @@ async function buildGroundingContext(input) {
 
   try {
     const [coreResults, structureResults, quoteResults] = await Promise.all([
-      searchTavily(`${query} 这本书讲什么 核心观点 主要内容`, { searchDepth: 'advanced', maxResults: 3 }),
-      searchTavily(`${query} 目录 章节 框架`, { searchDepth: 'advanced', maxResults: 3 }),
-      searchTavily(`${query} 书摘 金句 摘录 摘抄`, { searchDepth: 'advanced', maxResults: 3, includeRawContent: true }),
+      searchTavily(`${query} 这本书讲什么 核心观点 主要内容`, { searchDepth: 'advanced', maxResults: 3 }).catch(() => []),
+      searchTavily(`${query} 目录 章节 框架`, { searchDepth: 'advanced', maxResults: 3 }).catch(() => []),
+      searchTavily(`${query} 书摘 金句 摘录 摘抄`, { searchDepth: 'advanced', maxResults: 3, includeRawContent: true }).catch(() => []),
     ]);
     const results = mergeTavilyResults([coreResults, structureResults, quoteResults])
       .filter((item) => isRelevantGroundingResult(item, query));
@@ -1717,7 +2571,27 @@ async function buildGroundingContext(input) {
   }
 }
 
-async function buildAnalysisBrief(input, groundingContext) {
+async function buildCompactGroundingContext(input, timeoutMs = COMPACT_GROUNDING_TIMEOUT_MS) {
+  const query = [input.title, input.author].filter(Boolean).join(' ');
+  if (!query || !TAVILY_API_KEY || timeoutMs < 1200) {
+    return '';
+  }
+
+  try {
+    const results = await searchTavily(`${query} 这本书讲什么 核心观点 适用边界`, {
+      searchDepth: 'basic',
+      maxResults: 3,
+      timeoutMs,
+    });
+    const filtered = results.filter((item) => isRelevantGroundingResult(item, query));
+    return filtered.length ? buildCompactGroundingDossier(filtered) : '';
+  } catch (error) {
+    console.warn('Compact Tavily grounding failed, continuing without grounding.', error);
+    return '';
+  }
+}
+
+async function buildAnalysisBrief(input, groundingContext, timeoutMs = ANALYSIS_STAGE_TIMEOUT_MS) {
   if (!SILICONFLOW_API_KEY) {
     return '';
   }
@@ -1740,6 +2614,10 @@ async function buildAnalysisBrief(input, groundingContext) {
 4. 如果来源不足，要明确保守，不要硬编。
 5. 模块标题和判断要有编辑压缩感，不要落成泛泛而谈的章节概括。
 6. 入口层和模块层要学习成熟阅读地图的节奏：先给判断，再给“为什么重要”，最后给可带走点。
+7. 明确区分“正文可确认”“公开资料可确认”“需要保守表达”的层次，不要混成一个确定口吻。
+
+来源策略：
+${buildPromptStrategyNotes(input, 'analysis')}
 
 书名：${input.title}
 作者：${input.author || 'Unknown'}
@@ -1755,7 +2633,7 @@ ${String(input.content || '').slice(0, 120000)}
 ${groundingContext || '无'}
   `.trim();
 
-  return callSiliconFlow({ prompt, maxTokens: 1600, temperature: 0.25, responseFormat: 'text' });
+  return callSiliconFlow({ prompt, maxTokens: 1600, temperature: 0.25, responseFormat: 'text', timeoutMs });
 }
 
 function buildMapPrompt(input, groundingContext, analysisBrief) {
@@ -1795,7 +2673,7 @@ ${String(input.content || '').slice(0, 120000)}
 返回 JSON，结构如下：
 {
   "title": "书名",
-  "author": "作者",
+  "author": "作者，未知时留空字符串",
   "cover": "https://...",
   "oneLiner": { "zh": "一句话结论", "en": "..." },
   "about": { "zh": "这本书到底在讲什么", "en": "..." },
@@ -1852,6 +2730,206 @@ ${String(input.content || '').slice(0, 120000)}
   `.trim();
 }
 
+function buildCompactCatalogPrompt(input, groundingContext) {
+  return `
+只返回合法 JSON，不要解释，不要 markdown。
+基于书名与公开线索，为《${input.title}》生成极简 reading-map seed。
+不要伪装成读过原书全文。
+
+作者：${input.author || '待确认'}
+${groundingContext ? `grounding：${groundingContext}` : 'grounding：无'}
+
+返回这个结构，所有元素都写短句：
+{
+  "oneLiner": "18字内",
+  "about": "40字内",
+  "overview": ["短判断1", "短判断2", "短判断3", "短判断4"],
+  "parts": ["模块名1", "模块名2", "模块名3", "模块名4"],
+  "methods": ["动作1", "动作2", "动作3", "动作4"],
+  "quotes": ["关键判断：...", "关键判断：..."],
+  "routes": ["路线1", "路线2"]
+}
+
+要求：
+- overview 恰好 4 条，用来概括四个阅读判断
+- parts 恰好 4 条，必须像阅读模块名，不要写“问题定义/结构展开”
+- methods 恰好 4 条，写成动作短句
+- quotes 恰好 2 条，必须以“关键判断：”开头
+- routes 恰好 2 条，只写如何进入这本书
+  `.trim();
+}
+
+function buildCompactUploadPrompt(input, compressedContent, groundingContext) {
+  return `
+只返回合法 JSON，不要解释，不要 markdown。
+基于压缩正文，为《${input.title}》生成极小 reading-map seed。
+正文证据优先；如果正文与书名常识冲突，优先相信正文。
+
+作者：${input.author || '待确认'}
+压缩正文：
+${compressedContent || '无'}
+${groundingContext ? `辅助 grounding：${groundingContext}` : '辅助 grounding：无'}
+
+返回这个结构，所有元素都写短句。字段可以很少，服务端会补齐：
+{
+  "oneLiner": "18字内",
+  "about": "40字内",
+  "overview": ["短判断1", "短判断2"],
+  "parts": ["模块名1", "模块名2"],
+  "methods": ["动作1", "动作2"],
+  "quotes": ["关键判断：..."],
+  "routes": ["路线1"]
+}
+
+要求：
+- overview 2 条
+- parts 2 条，必须像正文阅读模块名，不要写“问题定义/结构展开”
+- methods 2 条，写成动作短句
+- quotes 1 条，优先写“关键判断：...”
+- routes 1 条，只写按正文进入的读法
+  `.trim();
+}
+
+function inflateCompactReadingMapSeed(seed, input) {
+  const fallback = buildPrototypeMap(input);
+  const overviewColors = [
+    'from-orange-500 to-amber-500',
+    'from-sky-500 to-cyan-500',
+    'from-emerald-500 to-teal-500',
+    'from-fuchsia-500 to-pink-500',
+  ];
+  const overviewLayers = ['第一层', '第二层', '第三层', '第四层'];
+  const partSubtitles = ['第一部分', '第二部分', '第三部分', '第四部分'];
+  const fallbackKnowledge = buildFallbackKnowledgeMap(input, seed?.title || input.title);
+  const fallbackTimeline = buildFallbackTimeline(input, seed?.title || input.title);
+
+  const overview = Array.isArray(seed?.overview) ? seed.overview.slice(0, 4) : [];
+  const parts = Array.isArray(seed?.parts) ? seed.parts.slice(0, 4) : [];
+  const methods = Array.isArray(seed?.methods) ? seed.methods.slice(0, input.sourceKind === 'upload' ? 6 : 5) : [];
+  const quotes = Array.isArray(seed?.quotes) ? seed.quotes.slice(0, input.sourceKind === 'upload' ? 3 : 2) : [];
+  const debates = Array.isArray(seed?.debates) ? seed.debates.slice(0, 2) : [];
+  const routes = Array.isArray(seed?.routes) ? seed.routes.slice(0, 2) : [];
+  const methodCategories = [...new Set(methods.map((item) => trimText(typeof item === 'string' ? '' : item?.category)).filter(Boolean))].slice(0, 3);
+  const defaultMethodCategories = input.sourceKind === 'upload'
+    ? ['正文入口', '结构判断', '迁移动作']
+    : ['阅读入口', '判断框架', '边界提醒'];
+
+  return {
+    title: trimText(seed?.title) || input.title,
+    author: hasKnownAuthor(seed?.author) ? trimText(seed.author) : (input.author || ''),
+    oneLiner: {
+      zh: trimText(seed?.oneLiner) || fallback.oneLiner.zh,
+    },
+    about: {
+      zh: trimText(seed?.about) || fallback.about.zh,
+    },
+    readingPosition: {
+      zh: trimText(seed?.readingPosition) || fallback.readingPosition.zh,
+    },
+    stats: {
+      structure: 4,
+      volume: Math.min(Math.max(Math.ceil(String(input.content || '').length / 900), 80), 480),
+    },
+    overview: {
+      title: trimText(seed?.overviewTitle) || fallback.overview.title,
+      subtitle: trimText(seed?.overviewSubtitle) || fallback.overview.subtitle,
+      cards: overview.map((item, index) => ({
+        layer: overviewLayers[index],
+        title: trimText(typeof item === 'string' ? item : item?.title) || fallback.overview.cards[index]?.title,
+        desc: trimText(typeof item === 'string' ? '' : item?.desc) || fallback.overview.cards[index]?.desc,
+        points: Array.isArray(typeof item === 'string' ? null : item?.points) && item.points.length >= 3
+          ? item.points.map((point) => trimText(point)).filter(Boolean).slice(0, 3)
+          : [
+              trimText(typeof item === 'string' ? item : item?.title) || fallback.overview.cards[index]?.points?.[0],
+              trimText(typeof item === 'string' ? item : item?.desc).slice(0, 16) || fallback.overview.cards[index]?.points?.[1],
+              input.sourceKind === 'upload' ? '回原文核对' : '回原书确认',
+            ].filter(Boolean).slice(0, 3),
+        color: overviewColors[index],
+      })),
+    },
+    knowledgeMap: fallbackKnowledge,
+    parts: parts.map((item, index) => {
+      const title = trimText(typeof item === 'string' ? item : item?.title) || fallback.parts[index]?.title;
+      const desc = trimText(typeof item === 'string' ? '' : item?.desc);
+      const navDesc = trimText(typeof item === 'string' ? '' : item?.navDesc) || desc || `${title} 是进入这本书的一段核心阅读模块。`;
+      const task = trimText(typeof item === 'string' ? '' : item?.task) || desc || `先用“${title}”判断这一部分值得读什么。`;
+      const takeaways = Array.isArray(typeof item === 'string' ? null : item?.takeaways) ? item.takeaways.map((entry) => trimText(entry)).filter(Boolean).slice(0, 3) : [];
+      const chapters = Array.isArray(typeof item === 'string' ? null : item?.chapters) ? item.chapters.map((entry) => trimText(entry)).filter(Boolean).slice(0, 3) : [];
+      const derivedTakeaways = [
+        navDesc,
+        task,
+        input.sourceKind === 'upload' ? '回到正文验证这一段的推进动作。' : '回到原书确认这一部分的真实展开。',
+      ].filter(Boolean).slice(0, 3);
+      const derivedChapters = [
+        title,
+        navDesc.slice(0, 14),
+        task.slice(0, 14),
+      ].filter(Boolean).slice(0, 3);
+      return {
+        id: `part-${index + 1}`,
+        title,
+        subtitle: partSubtitles[index],
+        navDesc,
+        intro: trimText(item?.intro) || `${navDesc} ${task}`.slice(0, 90) || fallback.parts[index]?.intro,
+        tags: [title, derivedTakeaways[0], derivedChapters[0]].filter(Boolean).slice(0, 3),
+        task,
+        takeaways: takeaways.length >= 3 ? takeaways : derivedTakeaways,
+        chapters: chapters.length >= 3 ? chapters : derivedChapters,
+        position: trimText(item?.position) || `${title} 帮助读者把这一段放回整本书的推进链里。`,
+      };
+    }),
+    methods: {
+      categories: methodCategories.length >= 2 ? methodCategories : defaultMethodCategories.slice(0, 2),
+      items: methods.map((item, index) => ({
+        id: String(index + 1).padStart(2, '0'),
+        category: trimText(typeof item === 'string' ? '' : item?.category) || methodCategories[0] || defaultMethodCategories[index % defaultMethodCategories.length],
+        title: trimText(typeof item === 'string' ? item : item?.title) || fallback.methods.items[index]?.title,
+        desc: trimText(typeof item === 'string' ? '' : item?.desc) || `把“${trimText(typeof item === 'string' ? item : item?.title) || fallback.methods.items[index]?.title}”当作进入这本书的一步动作。`,
+      })),
+    },
+    timeline: fallbackTimeline,
+    quotes: quotes.map((item, index) => {
+      const fallbackQuote = buildFallbackQuotes(input, seed?.title || input.title)[index];
+      if (typeof item === 'string') {
+        return {
+          quote: trimText(item) || fallbackQuote?.quote,
+          note: input.sourceKind === 'upload'
+            ? '基于压缩正文提炼的关键判断。'
+            : '基于书名与公开线索提炼的关键判断。',
+        };
+      }
+      return {
+        quote: trimText(item?.quote) || fallbackQuote?.quote,
+        note: trimText(item?.note) || fallbackQuote?.note,
+      };
+    }),
+    debates: debates.map((item, index) => ({
+      title: trimText(item?.title) || buildFallbackDebates(input, seed?.title || input.title)[index]?.title,
+      value: trimText(item?.value) || buildFallbackDebates(input, seed?.title || input.title)[index]?.value,
+      reservation: trimText(item?.reservation) || buildFallbackDebates(input, seed?.title || input.title)[index]?.reservation,
+    })),
+    routes: routes.map((item, index) => ({
+      audience: trimText(typeof item === 'string' ? '' : item?.audience) || buildFallbackRoutes(input, seed?.title || input.title)[index]?.audience,
+      route: trimText(typeof item === 'string' ? item : item?.route) || buildFallbackRoutes(input, seed?.title || input.title)[index]?.route,
+      focus: Array.isArray(typeof item === 'string' ? null : item?.focus) && item.focus.length >= 2
+        ? item.focus.map((entry) => trimText(entry)).filter(Boolean).slice(0, 2)
+        : buildFallbackRoutes(input, seed?.title || input.title)[index]?.focus,
+    })),
+  };
+}
+
+async function buildCompactReadingMap(input, prompt, timeoutMs) {
+  return callSiliconFlow({
+    prompt,
+    maxTokens: input.sourceKind === 'upload' ? 320 : 500,
+    temperature: 0,
+    responseFormat: 'json_object',
+    model: SILICONFLOW_COMPACT_MODEL,
+    timeoutMs,
+    jsonRepairMode: 'compact-seed',
+  });
+}
+
 function buildMetaPrompt(input, groundingContext, analysisBrief) {
   return `
 你现在是阅读地图总编辑。请先只生成这本书的“阅读入口层”，不要输出知识地图、模块、方法、时间线等其它区块。
@@ -1861,6 +2939,9 @@ function buildMetaPrompt(input, groundingContext, analysisBrief) {
 2. 语言要像成熟阅读产品，不像普通摘要。
 3. 如果是 title-only 模式，可以依据补充线索做稳健概括，但不要假造细碎章节。
 4. 一句话结论要有判断，不要只是“本书探讨了……”。
+
+来源策略：
+${buildPromptStrategyNotes(input, 'meta')}
 
 只返回 JSON：
 {
@@ -1993,6 +3074,9 @@ function buildKnowledgePrompt(input, groundingContext, analysisBrief) {
 - 每个 desc 都要具体说明这一领域或工具为什么重要。
 - 领域名称不要只是学科名，要更接近作者真正处理的问题块。
 
+来源策略：
+${buildPromptStrategyNotes(input, 'knowledge')}
+
 书名：${input.title}
 作者：${input.author || 'Unknown'}
 来源模式：${input.sourceKind}
@@ -2042,6 +3126,9 @@ function buildPartsPrompt(input, groundingContext, analysisBrief) {
 - navDesc 要像“为什么这部分值得读”，task 要像读者要完成的认知动作。
 - takeaways 至少 3 条，chapters 至少 3 个，position 要说明它在整本书中的作用。
 
+来源策略：
+${buildPromptStrategyNotes(input, 'parts')}
+
 书名：${input.title}
 作者：${input.author || 'Unknown'}
 来源模式：${input.sourceKind}
@@ -2083,6 +3170,9 @@ function buildMethodsPrompt(input, groundingContext, analysisBrief) {
 - title 优先写成短硬动作句，不要用“某某机制”“某某框架”这类概念名糊弄过去。
 - desc 要回答“这个动作怎么用，为什么在这本书里重要”。
 
+来源策略：
+${buildPromptStrategyNotes(input, 'methods')}
+
 书名：${input.title}
 作者：${input.author || 'Unknown'}
 来源模式：${input.sourceKind}
@@ -2123,11 +3213,14 @@ function buildSynthesisPrompt(input, groundingContext, analysisBrief) {
 
 要求：
 - timeline 输出 4 到 6 条，优先展示问题演化、作者论证推进或现实阶段。
-- quotes 输出 4 到 6 条，允许是高度贴近原意的关键判断，不必强行逐字引用。
+- quotes 输出 4 到 6 条。upload 可以用正文短句或关键判断；catalog 只能写关键判断，不要伪装成原书逐字摘录。
 - debates 输出 2 到 4 条，必须写出价值与保留。
 - routes 输出 3 到 4 条，针对不同读者给出清晰阅读入口。
 - quote 优先选“能代表作者判断”的句子，不要写空洞正确话。
-- 如果补充线索里提供了“候选原句”，优先使用这些短句作为 quote，尽量保留原始措辞。
+- 如果补充线索里提供了“候选原句”，只有在 upload 或来源足够明确时才可保留原始措辞。
+
+来源策略：
+${buildPromptStrategyNotes(input, 'synthesis')}
 
 书名：${input.title}
 作者：${input.author || 'Unknown'}
@@ -2147,23 +3240,42 @@ ${String(input.content || '').slice(0, 60000)}
   `.trim();
 }
 
-async function buildReadingMapBySections(input, groundingContext, analysisBrief) {
+async function buildReadingMapSinglePass(input, groundingContext, analysisBrief, timeoutMs) {
+  return callSiliconFlow({
+    prompt: buildMapPrompt(input, groundingContext, analysisBrief),
+    maxTokens: 2200,
+    temperature: 0.25,
+    responseFormat: 'json_object',
+    timeoutMs,
+  });
+}
+
+async function buildReadingMapBySections(input, groundingContext, analysisBrief, options = {}) {
+  const {
+    deadline = Date.now() + SILICONFLOW_TIMEOUT_MS,
+    sectionTimeoutMs = SECTION_STAGE_TIMEOUT_MS,
+  } = options;
   const merged = {};
   const sections = [
-    { key: 'meta', prompt: buildMetaPrompt(input, groundingContext, analysisBrief), maxTokens: 1200, temperature: 0.3 },
-    { key: 'knowledge', prompt: buildKnowledgePrompt(input, groundingContext, analysisBrief), maxTokens: 1100, temperature: 0.25 },
-    { key: 'parts', prompt: buildPartsPrompt(input, groundingContext, analysisBrief), maxTokens: 1400, temperature: 0.25 },
-    { key: 'methods', prompt: buildMethodsPrompt(input, groundingContext, analysisBrief), maxTokens: 1200, temperature: 0.25 },
-    { key: 'synthesis', prompt: buildSynthesisPrompt(input, groundingContext, analysisBrief), maxTokens: 1200, temperature: 0.25 },
+    { key: 'meta', prompt: buildMetaPrompt(input, groundingContext, analysisBrief), maxTokens: 900, temperature: 0.3 },
+    { key: 'structure', prompt: buildStructurePrompt(input, groundingContext, analysisBrief), maxTokens: 1600, temperature: 0.25 },
+    { key: 'synthesis', prompt: buildSynthesisPrompt(input, groundingContext, analysisBrief), maxTokens: 900, temperature: 0.25 },
   ];
 
   for (const section of sections) {
+    const timeoutMs = capStageTimeout(deadline, sectionTimeoutMs);
+    if (!timeoutMs) {
+      console.warn(`Skipping map section generation for ${section.key}: insufficient remaining budget.`);
+      break;
+    }
+
     try {
       const partial = await callSiliconFlow({
         prompt: section.prompt,
         maxTokens: section.maxTokens,
         temperature: section.temperature,
         responseFormat: 'json_object',
+        timeoutMs,
       });
       Object.assign(merged, partial);
     } catch (error) {
@@ -2205,7 +3317,7 @@ app.get('/api/search-books', async (request, response) => {
     ]);
     const googleCandidates = buildGoogleCandidates(query, googleResults);
     const openLibraryCandidates = buildOpenLibraryCandidates(query, openLibraryResults);
-    const results = mergeSearchCandidates(query, [...localMatches, ...googleCandidates, ...openLibraryCandidates], []);
+    const results = mergeSearchCandidates(query, localMatches, [...googleCandidates, ...openLibraryCandidates]);
 
     response.json({ results });
   } catch (error) {
@@ -2276,23 +3388,50 @@ app.post('/api/generate-map', async (request, response) => {
   }
 
   try {
-    const groundingContext = await buildGroundingContext(input);
-    const useDeepAnalysisStage = Boolean(input.content && String(input.content).length > 4000);
-    const analysisBrief = useDeepAnalysisStage || input.sourceKind === 'catalog'
-      ? await buildAnalysisBrief(input, groundingContext)
+    const deadline = Date.now() + getGenerationBudgetMs(input);
+    const groundingTimeoutMs = capStageTimeout(deadline, COMPACT_GROUNDING_TIMEOUT_MS, 1200);
+    const useCompactGrounding = input.sourceKind === 'catalog'
+      ? hasKnownAuthor(input.author)
+      : Boolean(input.author);
+    const groundingContext = useCompactGrounding && groundingTimeoutMs
+      ? await buildCompactGroundingContext(input, groundingTimeoutMs)
       : '';
-    const raw = await buildReadingMapBySections(input, groundingContext, analysisBrief);
-    const shouldRunSparsePass = Boolean(input.content && String(input.content).length > 6000);
-    const enrichedRaw = shouldRunSparsePass
-      ? await enrichSparseMap(input, groundingContext, analysisBrief, raw)
-      : raw;
-    const editorialRaw = await enrichEditorialDepth(input, groundingContext, analysisBrief, enrichedRaw);
-    const polishedRaw = await polishMapQuality(input, groundingContext, analysisBrief, editorialRaw);
-    const map = normalizeGeneratedMap(polishedRaw, input);
-    map.cover = await resolveBookCover(map.title, map.author, map.cover);
+    const compressedContent = input.sourceKind === 'upload'
+      ? buildCompressedUploadContent(input.content)
+      : '';
+    const modelTimeoutMs = input.sourceKind === 'upload'
+      ? capStageTimeout(deadline, UPLOAD_COMPACT_TIMEOUT_MS, 12000)
+      : capStageTimeout(deadline, CATALOG_COMPACT_TIMEOUT_MS, 10000);
+
+    if (!modelTimeoutMs) {
+      throw new Error('Remaining generation budget is insufficient for compact map generation.');
+    }
+
+    const prompt = input.sourceKind === 'upload'
+      ? buildCompactUploadPrompt(input, compressedContent, groundingContext)
+      : buildCompactCatalogPrompt(input, groundingContext);
+    const seed = await buildCompactReadingMap(input, prompt, modelTimeoutMs);
+    const raw = inflateCompactReadingMapSeed(seed, input);
+    const map = normalizeGeneratedMap(raw, input);
+    const coverLookupTimeoutMs = capStageTimeout(deadline, COVER_LOOKUP_TIMEOUT_MS, 1000);
+    map.cover = coverLookupTimeoutMs
+      ? await resolveBookCover(map.title, map.author, map.cover, coverLookupTimeoutMs)
+      : (map.cover || fallbackCover);
     response.json({ map, provider: 'siliconflow', mode: map.sourceMeta.mode });
   } catch (error) {
     console.error('SiliconFlow generation failed, falling back.', error);
+    const canUseCompactFallback =
+      error instanceof SyntaxError ||
+      (error instanceof Error && /(timeout|aborted)/i.test(error.message));
+    if (canUseCompactFallback) {
+      const map = buildPrototypeMap(input);
+      const coverLookupTimeoutMs = capStageTimeout(Date.now() + COVER_LOOKUP_TIMEOUT_MS, COVER_LOOKUP_TIMEOUT_MS, 0);
+      map.cover = coverLookupTimeoutMs
+        ? await resolveBookCover(map.title, map.author, map.cover, coverLookupTimeoutMs)
+        : (map.cover || fallbackCover);
+      response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
+      return;
+    }
     if (!ALLOW_PROTOTYPE_FALLBACK) {
       sendGenerationUnavailable(
         response,
