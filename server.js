@@ -371,6 +371,131 @@ const libraryMaps = [
   },
 ];
 
+const catalogSeedBooks = [
+  {
+    id: 'seed-thinking-fast-slow',
+    title: '思考，快与慢 (Thinking, Fast and Slow)',
+    author: 'Daniel Kahneman',
+    aliases: ['思考快与慢', '思考，快与慢', 'Thinking Fast and Slow', '丹尼尔 卡尼曼', 'Daniel Kahneman'],
+    cover: fallbackCover,
+    oneLiner: { zh: '系统 1 与系统 2，解释我们如何判断、偏误和决策。' },
+    saves: 0,
+    status: 'no_map_paid',
+    source: 'catalog',
+    compactSeed: {
+      oneLiner: '快判断常常先带偏',
+      about: '系统1与系统2解释判断、偏误和决策',
+      overview: ['先分清两套思维系统', '再看偏误如何悄悄接管', '把判断放回概率与损失', '最后学会让慢思考接管'],
+      parts: ['系统1总想先给答案', '系统2并不会随时接管', '偏误会把直觉越推越偏', '决策要回到基线概率与损失'],
+      methods: ['先分清直觉还是审慎', '遇到概率题先停半拍', '把基线和损失写出来', '别把确信感当成正确'],
+      quotes: ['关键判断：大多数错误不是不会想，而是太快相信第一个答案。', '关键判断：真正稀缺的不是信息，而是让系统2及时接管的时刻。'],
+      routes: ['先看两套系统，再看偏误案例，最后回到决策章节。', '如果只想提升判断质量，重点读偏误、概率和损失厌恶。'],
+    },
+  },
+  {
+    id: 'seed-peak',
+    title: '刻意练习 (Peak)',
+    author: 'Anders Ericsson',
+    aliases: ['刻意练习', 'Peak', 'Ericsson', 'Anders Ericsson'],
+    cover: fallbackCover,
+    oneLiner: { zh: '高手不是天赋神话，而是训练结构设计的结果。' },
+    saves: 0,
+    status: 'no_map_paid',
+    source: 'catalog',
+    compactSeed: {
+      oneLiner: '高手是训练出来的',
+      about: '能力跃迁来自反馈、拆解和高质量训练',
+      overview: ['先打破天赋神话', '再理解高质量练习结构', '把反馈系统嵌进训练', '最后看长期积累如何拉开差距'],
+      parts: ['能力差距不是靠热爱解释', '练习必须有清晰拆解', '反馈决定训练是否有效', '高手成长依赖长期高压迭代'],
+      methods: ['先拆动作再练整套', '每次练习只盯一个误差', '让反馈尽量即时具体', '别把重复当成刻意练习'],
+      quotes: ['关键判断：不是练得久就会强，而是练习结构决定成长速度。', '关键判断：高手的优势常常来自更会设计反馈，而不只是更能吃苦。'],
+      routes: ['先看天赋误区，再看练习结构，最后回到反馈设计。', '如果想迁移到工作场景，重点读拆解、反馈和长期训练机制。'],
+    },
+  },
+  {
+    id: 'seed-sapiens',
+    title: '人类简史 (Sapiens)',
+    author: 'Yuval Noah Harari',
+    aliases: ['人类简史', 'Sapiens', '尤瓦尔 赫拉利', 'Yuval Noah Harari'],
+    cover: fallbackCover,
+    oneLiner: { zh: '从认知革命到虚构秩序，解释人类为何成为地球主导物种。' },
+    saves: 0,
+    status: 'no_map_paid',
+    source: 'catalog',
+    compactSeed: {
+      oneLiner: '人类靠共同想象协作',
+      about: '从认知革命到虚构秩序重写人类崛起逻辑',
+      overview: ['先看认知革命如何改写协作', '再看农业如何换来新束缚', '把帝国货币宗教放回同一套秩序', '最后追问科技如何反过来改写人类'],
+      parts: ['会讲故事才有大规模协作', '农业革命不只是进步神话', '虚构秩序让陌生人稳定合作', '科技革命把人类推向新物种边缘'],
+      methods: ['先区分事实与虚构秩序', '别把进步叙事直接当福利增长', '把制度看成协作技术', '回到长期尺度看文明代价'],
+      quotes: ['关键判断：真正让人类形成大规模协作的，常常不是血缘，而是共同相信的故事。', '关键判断：很多被称作进步的变化，也可能只是把旧问题换成更复杂的约束。'],
+      routes: ['先看认知革命，再看虚构秩序，最后回到科技革命的后半段。', '如果更关心今天，重点读制度、货币、帝国和科技革命。'],
+    },
+  },
+  {
+    id: 'seed-atomic-habits',
+    title: 'Atomic Habits',
+    author: 'James Clear',
+    aliases: ['原子习惯', 'Atomic Habits', 'James Clear'],
+    cover: fallbackCover,
+    oneLiner: { zh: '习惯不是靠意志力，而是靠环境和系统设计。' },
+    saves: 0,
+    status: 'no_map_paid',
+    source: 'catalog',
+    compactSeed: {
+      oneLiner: '习惯先改系统不改人',
+      about: '用环境设计和微小复利重写习惯养成',
+      overview: ['先把习惯看成系统结果', '再看身份如何稳定行为', '把提示奖励摩擦重新设计', '最后用微小复利拉开差距'],
+      parts: ['行为失败常常是系统失败', '身份感比短期目标更稳', '环境比意志力更会驱动动作', '微小复利会在长期放大差距'],
+      methods: ['先改环境再谈自律', '把好习惯做得显眼简单', '给坏习惯增加摩擦', '用身份标签稳定重复'],
+      quotes: ['关键判断：习惯很少败给目标不清，更多败给系统设计太差。', '关键判断：真正稳的改变，不是偶尔爆发，而是让重复变得更容易。'],
+      routes: ['先看系统与身份，再看四步法，最后回到环境设计。', '如果只想快速上手，重点读提示、摩擦、奖励和复盘。'],
+    },
+  },
+  {
+    id: 'seed-lean-startup',
+    title: '精益创业 (The Lean Startup)',
+    author: 'Eric Ries',
+    aliases: ['精益创业', 'Lean Startup', 'The Lean Startup', 'Eric Ries'],
+    cover: fallbackCover,
+    oneLiner: { zh: '用最小可行产品和反馈回路降低创业试错成本。' },
+    saves: 0,
+    status: 'no_map_paid',
+    source: 'catalog',
+    compactSeed: {
+      oneLiner: '创业先验证不是先堆功能',
+      about: '用最小可行产品和反馈回路降低试错成本',
+      overview: ['先把创业当成验证过程', '再用最小可行产品换真实反馈', '把学习速度做成核心指标', '最后让迭代取代拍脑袋规划'],
+      parts: ['创业最怕验证顺序错了', '最小可行产品先换回真实证据', '指标必须服务学习而不是自我安慰', '转向不是失败而是修正路径'],
+      methods: ['先验证最关键假设', '尽快让真实用户接触产品', '别把虚荣指标当增长', '用转向守住学习速度'],
+      quotes: ['关键判断：创业最大的浪费，不是做得慢，而是把时间花在错误假设上。', '关键判断：最小可行产品的价值，不在于小，而在于它能更快换回真实反馈。'],
+      routes: ['先看假设验证，再看最小可行产品，最后回到指标与转向。', '如果更关心实操，重点读反馈回路、创新会计和转向时机。'],
+    },
+  },
+  {
+    id: 'seed-zero-to-one',
+    title: '从 0 到 1 (Zero to One)',
+    author: 'Peter Thiel',
+    aliases: ['从0到1', '从 0 到 1', 'Zero to One', 'Peter Thiel'],
+    cover: fallbackCover,
+    oneLiner: { zh: '真正重要的创业不是复制，而是创造别人还没有做出的新东西。' },
+    saves: 0,
+    status: 'no_map_paid',
+    source: 'catalog',
+    compactSeed: {
+      oneLiner: '创业要做别人没做出的事',
+      about: '竞争不是目标，垄断能力与独特真理才是起点',
+      overview: ['先分清从0到1和从1到N', '再看竞争为什么会吃掉利润', '把秘密与真理放回创业起点', '最后看公司如何围绕长期优势设计'],
+      parts: ['复制不会带来真正突破', '竞争越激烈越难留下利润', '秘密是创业判断的真正起点', '长期优势要写进团队和市场结构'],
+      methods: ['先问你知道什么别人不知道', '别把竞争当成默认正确', '把垄断来源拆清楚', '让团队围绕长期真理组织起来'],
+      quotes: ['关键判断：重要的公司不是把已知事情做得更多，而是把未知事情第一次做成。', '关键判断：如果你只能在竞争里取胜，通常说明你还没有建立真正独特的价值。'],
+      routes: ['先看0到1与竞争，再看秘密与垄断，最后回到公司构建。', '如果更关心创业判断，重点读秘密、市场结构和长期优势设计。'],
+    },
+  },
+];
+
+const localCatalogBooks = dedupeBooks([...libraryMaps, ...catalogSeedBooks]);
+
 function normalize(value) {
   return String(value || '')
     .toLowerCase()
@@ -480,7 +605,7 @@ function searchLocalLibrary(query) {
     return libraryMaps;
   }
 
-  return libraryMaps
+  return localCatalogBooks
     .map((book) => ({ book, score: scoreLibraryBook(book, trimmed) }))
     .filter((item) => item.score >= 180)
     .sort((a, b) => b.score - a.score)
@@ -516,7 +641,44 @@ function findStrongLocalBookByTitle(title) {
     return null;
   }
 
-  return libraryMaps.find((book) => getLibraryLookupFields(book).includes(normalizedTitle)) || null;
+  return localCatalogBooks.find((book) => getLibraryLookupFields(book).includes(normalizedTitle)) || null;
+}
+
+function findBestCatalogSeed(query) {
+  const trimmed = String(query || '').trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return catalogSeedBooks
+    .map((book) => ({ book, score: scoreLibraryBook(book, trimmed) }))
+    .filter((item) => item.score >= 180)
+    .sort((a, b) => b.score - a.score)[0]?.book || null;
+}
+
+function cloneCompactSeed(seed) {
+  if (!seed || typeof seed !== 'object') {
+    return null;
+  }
+
+  return {
+    oneLiner: trimText(seed.oneLiner),
+    about: trimText(seed.about),
+    overview: Array.isArray(seed.overview) ? seed.overview.map((item) => trimText(item)).filter(Boolean).slice(0, 4) : [],
+    parts: Array.isArray(seed.parts) ? seed.parts.map((item) => trimText(item)).filter(Boolean).slice(0, 4) : [],
+    methods: Array.isArray(seed.methods) ? seed.methods.map((item) => trimText(item)).filter(Boolean).slice(0, 4) : [],
+    quotes: Array.isArray(seed.quotes) ? seed.quotes.map((item) => trimText(item)).filter(Boolean).slice(0, 2) : [],
+    routes: Array.isArray(seed.routes) ? seed.routes.map((item) => trimText(item)).filter(Boolean).slice(0, 2) : [],
+  };
+}
+
+function toPublicSearchBook(book) {
+  if (!book || typeof book !== 'object') {
+    return book;
+  }
+
+  const { compactSeed, ...publicBook } = book;
+  return publicBook;
 }
 
 function getGenerationBudgetMs(input) {
@@ -3048,6 +3210,144 @@ function buildUploadLocalCompactSeed(input, compressedContent = '') {
   };
 }
 
+function extractCatalogGroundingHints(groundingContext) {
+  return String(groundingContext || '')
+    .split('\n')
+    .map((line) => trimText(line.replace(/^\d+\.\s*/, '').replace(/^摘要[:：]\s*/, '')))
+    .filter((line) => line.length >= 8 && line.length <= 48)
+    .slice(0, 6);
+}
+
+function buildGenericCatalogCompactSeed(input, groundingContext = '') {
+  const safeTitle = trimText(input?.title) || '这本书';
+  const safeAuthor = trimText(input?.author);
+  const groundingHints = extractCatalogGroundingHints(groundingContext);
+  const titleKeywords = extractGroundingKeywords(safeTitle).slice(0, 3);
+  const firstKeyword = titleKeywords[0] || '主问题';
+  const secondKeyword = titleKeywords[1] || '关键判断';
+  const primaryHint = groundingHints[0] || `${safeTitle} 的核心命题`;
+  const secondaryHint = groundingHints[1] || `${safeTitle} 的主要分歧`;
+
+  return {
+    oneLiner: `${safeTitle} 先看${firstKeyword}`,
+    about: safeAuthor
+      ? `${safeAuthor} 这本书更适合先抓主题、判断和读法。`
+      : `${safeTitle} 更适合先抓主题、判断和读法。`,
+    overview: [
+      `先看${firstKeyword}到底在处理什么`,
+      `再看${secondKeyword}如何组织判断`,
+      primaryHint.slice(0, 18),
+      secondaryHint.slice(0, 18),
+    ],
+    parts: [
+      `先确认${firstKeyword}的主问题`,
+      `再看${secondKeyword}怎样展开`,
+      '把关键判断放回适用边界',
+      '最后决定这本书该怎么读',
+    ],
+    methods: [
+      '先区分主题和结论',
+      '把阅读入口压成四步',
+      '先找边界再记观点',
+      '回原书核对关键判断',
+    ],
+    quotes: [
+      `关键判断：${safeTitle} 更适合先建立阅读入口，而不是直接消费成一句结论。`,
+      '关键判断：主题、边界和读法，往往比一句漂亮金句更值得先看。',
+    ],
+    routes: [
+      '先看主问题和判断框架，再决定是否深读。',
+      '先看争议与边界，再回到最关键的章节和段落。',
+    ],
+  };
+}
+
+function buildCatalogLocalCompactSeed(input, groundingContext = '') {
+  const curated = findBestCatalogSeed(input?.title || '');
+  if (curated?.compactSeed) {
+    return {
+      title: curated.title,
+      author: curated.author,
+      ...cloneCompactSeed(curated.compactSeed),
+    };
+  }
+
+  return {
+    title: trimText(input?.title),
+    author: trimText(input?.author),
+    ...buildGenericCatalogCompactSeed(input, groundingContext),
+  };
+}
+
+function isWeakCompactSeedText(value) {
+  const cleaned = trimText(value);
+  return (
+    !cleaned ||
+    cleaned.length < 5 ||
+    /^[\d\s]+$/.test(cleaned) ||
+    /^(无|未知|模块|标题|方法|路线|关键判断：?$|《.+》》)$/.test(cleaned) ||
+    /^(这本书到底在处理什么问题|作者主要用什么结构展开|读完真正该带走什么|不同读者该怎么读|问题定义|结构展开|方法提炼|阅读路线)$/.test(cleaned)
+  );
+}
+
+function mergeCompactSeedList(list, fallbackList, targetLength) {
+  const current = Array.isArray(list) ? list.map((item) => trimText(item)).filter(Boolean) : [];
+  const fallback = Array.isArray(fallbackList) ? fallbackList.map((item) => trimText(item)).filter(Boolean) : [];
+
+  const merged = current
+    .map((item, index) => (isWeakCompactSeedText(item) ? fallback[index] : item))
+    .filter(Boolean);
+
+  fallback.forEach((item) => {
+    if (merged.length >= targetLength) {
+      return;
+    }
+    if (!merged.includes(item)) {
+      merged.push(item);
+    }
+  });
+
+  return merged.slice(0, targetLength);
+}
+
+function stabilizeCatalogCompactSeed(seed, input, groundingContext = '') {
+  const fallback = buildCatalogLocalCompactSeed(input, groundingContext);
+  const current = seed && typeof seed === 'object' ? seed : {};
+  const quotes = mergeCompactSeedList(current.quotes, fallback.quotes, 2).map((item) => (
+    item.startsWith('关键判断：') ? item : `关键判断：${item.replace(/^["“”']+|["“”']+$/g, '')}`
+  ));
+
+  return {
+    ...current,
+    title: trimText(current.title) || fallback.title || trimText(input?.title),
+    author: hasKnownAuthor(current.author) ? trimText(current.author) : (fallback.author || trimText(input?.author)),
+    oneLiner: isWeakCompactSeedText(current.oneLiner) ? fallback.oneLiner : trimText(current.oneLiner),
+    about: isWeakCompactSeedText(current.about) ? fallback.about : trimText(current.about),
+    overview: mergeCompactSeedList(current.overview, fallback.overview, 4),
+    parts: mergeCompactSeedList(current.parts, fallback.parts, 4),
+    methods: mergeCompactSeedList(current.methods, fallback.methods, 4),
+    quotes,
+    routes: mergeCompactSeedList(current.routes, fallback.routes, 2),
+  };
+}
+
+function enrichCatalogInput(input) {
+  if (input?.sourceKind !== 'catalog') {
+    return input;
+  }
+
+  const curated = findBestCatalogSeed(input?.title || '');
+  if (!curated) {
+    return input;
+  }
+
+  return {
+    ...input,
+    title: curated.title,
+    author: hasKnownAuthor(input?.author) ? trimText(input.author) : curated.author,
+  };
+}
+
 const editorialStyleGuide = `
 写作标准：
 1. 不要写成百科简介，要写成“这本书真正值得读的地方”。
@@ -4029,7 +4329,7 @@ app.get('/api/search-books', async (request, response) => {
 
   if (!query) {
     appendRequestLogMeta({ resultsCount: libraryMaps.length });
-    response.json({ results: libraryMaps });
+    response.json({ results: libraryMaps.map(toPublicSearchBook) });
     return;
   }
 
@@ -4069,7 +4369,7 @@ app.get('/api/search-books', async (request, response) => {
       resultsCount: results.length,
       localMatches: localMatches.length,
     });
-    response.json({ results });
+    response.json({ results: results.map(toPublicSearchBook) });
   } catch (error) {
     const fallbackResults = searchLocalLibrary(query);
     const errorType = classifyError(error);
@@ -4087,7 +4387,7 @@ app.get('/api/search-books', async (request, response) => {
       queryLength: query.length,
       error: summarizeError(error),
     });
-    response.json({ results: fallbackResults });
+    response.json({ results: fallbackResults.map(toPublicSearchBook) });
   }
 });
 
@@ -4150,13 +4450,9 @@ app.get('/api/share-map/:id', (request, response) => {
 });
 
 app.post('/api/generate-map', async (request, response) => {
-  const input = request.body || {};
-  const generateMeta = summarizeGenerateInput(input);
+  const requestInput = request.body || {};
   const stageTracker = createStageTracker();
-  appendRequestLogMeta(generateMeta);
-  logEvent('log', 'generate_map_started', generateMeta);
-
-  const hasTitle = stageTracker.runSync('request_validation', () => Boolean(input.title));
+  const hasTitle = stageTracker.runSync('request_validation', () => Boolean(requestInput.title));
 
   if (!hasTitle) {
     appendRequestLogMeta({
@@ -4166,6 +4462,11 @@ app.post('/api/generate-map', async (request, response) => {
     response.status(400).json({ error: '缺少必填字段：title。请先提供书名。' });
     return;
   }
+
+  const input = stageTracker.runSync('catalog_input_enrichment', () => enrichCatalogInput(requestInput));
+  const generateMeta = summarizeGenerateInput(input);
+  appendRequestLogMeta(generateMeta);
+  logEvent('log', 'generate_map_started', generateMeta);
 
   if (!SILICONFLOW_API_KEY) {
     if (!ALLOW_PROTOTYPE_FALLBACK) {
@@ -4264,24 +4565,36 @@ app.post('/api/generate-map', async (request, response) => {
       })
     ));
     let seedRepairRecovery = null;
-    const seed = stageTracker.runSync('seed_parse_or_repair', () => {
+    let seedRepairStrategy = null;
+    const parsedSeed = stageTracker.runSync('seed_parse_or_repair', () => {
       try {
         return extractJsonCandidate(seedContent, 'compact-seed');
       } catch (error) {
         if (input.sourceKind === 'upload' && error instanceof SyntaxError) {
           seedRepairRecovery = error.parseFailureKind || 'json_parse_error';
+          seedRepairStrategy = 'upload_local_seed';
           return buildUploadLocalCompactSeed(input, sourcePreparation.compressedContent);
+        }
+        if (input.sourceKind === 'catalog' && error instanceof SyntaxError) {
+          seedRepairRecovery = error.parseFailureKind || 'json_parse_error';
+          seedRepairStrategy = 'catalog_local_seed';
+          return buildCatalogLocalCompactSeed(input, groundingContext);
         }
         throw error;
       }
     });
+    const seed = stageTracker.runSync('seed_stabilize', () => (
+      input.sourceKind === 'catalog'
+        ? stabilizeCatalogCompactSeed(parsedSeed, input, groundingContext)
+        : parsedSeed
+    ));
     if (seedRepairRecovery) {
       appendRequestLogMeta({
-        seedRepairStrategy: 'upload_local_seed',
+        seedRepairStrategy,
         seedRepairRecovery,
       });
-      logEvent('warn', 'upload_seed_repaired_locally', {
-        recovery: 'upload_local_seed',
+      logEvent('warn', `${input.sourceKind}_seed_repaired_locally`, {
+        recovery: seedRepairStrategy,
         seedRepairRecovery,
         ...generateMeta,
       });

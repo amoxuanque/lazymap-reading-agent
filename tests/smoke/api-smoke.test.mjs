@@ -308,6 +308,19 @@ test('/api/search-books handles empty and unusual queries without crashing', asy
   assert.ok(Array.isArray(oddPayload.results));
 });
 
+test('/api/search-books returns curated author metadata for Chinese seed titles', async () => {
+  const response = await fetch(
+    `http://127.0.0.1:${appPort}/api/search-books?q=${encodeURIComponent('思考快与慢')}`,
+  );
+  const payload = await getJson(response);
+
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(payload.results));
+  assert.ok(payload.results.length > 0);
+  assert.equal(payload.results[0].author, 'Daniel Kahneman');
+  assert.match(payload.results[0].title, /思考.*Thinking, Fast and Slow/);
+});
+
 test('/api/search-books does not mismatch The Lever of Riches with The Book of Elon', async () => {
   const response = await fetch(
     `http://127.0.0.1:${appPort}/api/search-books?q=${encodeURIComponent('The Lever of Riches')}`,
@@ -416,6 +429,62 @@ test('/api/generate-map repairs malformed upload compact seeds and stays source-
     assert.equal(repairedServer.logs.value.includes('复杂系统不是把元素堆起来'), false);
     assert.equal(repairedServer.logs.value.includes('Output valid JSON only.'), false);
     assert.equal(repairedServer.logs.value.includes('YOUR_SILICONFLOW_API_KEY'), false);
+  } finally {
+    await stopServer(repairedServer);
+    await new Promise((resolve, reject) => {
+      siliconFlowStub.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+});
+
+test('/api/generate-map repairs malformed catalog compact seeds with curated local seed data', async () => {
+  const compactContent = `{"oneLoute": " ", "about": 4, "overview": ["模块"], "quotes": ["判断"]`;
+  const siliconFlowPort = await getFreePort();
+  const siliconFlowStub = createSiliconFlowStubServer(compactContent);
+
+  await new Promise((resolve, reject) => {
+    siliconFlowStub.listen(siliconFlowPort, '127.0.0.1', (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+
+  const repairedServer = await startServer({
+    SILICONFLOW_API_KEY: 'YOUR_SILICONFLOW_API_KEY',
+    SILICONFLOW_BASE_URL: `http://127.0.0.1:${siliconFlowPort}`,
+  });
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${repairedServer.port}/api/generate-map`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: '思考快与慢',
+        sourceKind: 'catalog',
+      }),
+    });
+    const payload = await getJson(response);
+
+    assert.equal(response.status, 200);
+    assert.ok(response.headers.get('x-request-id'));
+    assert.equal(payload.provider, 'siliconflow');
+    assert.equal(payload.mode, 'title-only');
+    assert.equal(payload.map.author, 'Daniel Kahneman');
+    assert.match(payload.map.title, /思考.*Thinking, Fast and Slow/);
+    assert.ok(payload.map.overview.cards.some((card) => /两套思维系统|偏误|慢思考/.test(card.title)));
+    assert.ok(payload.map.quotes.every((item) => item.quote.startsWith('关键判断：')));
+
+    await waitForLogsToFlush();
+    assert.equal(repairedServer.logs.value.includes('"provider":"prototype-fallback"'), false);
   } finally {
     await stopServer(repairedServer);
     await new Promise((resolve, reject) => {
