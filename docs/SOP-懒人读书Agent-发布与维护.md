@@ -21,9 +21,23 @@
 
 ```bash
 npm install
-npm run build
-node --check server.js
+npm run check:release
 ```
+
+`npm run check:release` 当前会串行执行：
+- `node --check server.js`
+- `npm run lint`
+- `npm run build`
+- `npm run test:smoke`
+- `npm run scan:decredit`
+- `npm run scan:secrets`
+
+通过口径：
+- 构建、类型检查、后端语法检查全部通过
+- 核心 API smoke 通过：`/api/health`、`/api/search-books`、`/api/generate-map`、`/api/share-map`
+- 不依赖真实外部 API Key 也能跑通大部分回归
+- `src/` 中不出现被禁止的积分文案与 `consumeCredits`
+- `.env.local` 未入库，仓库 tracked files 中无明显明文 API Key
 
 2. 检查敏感信息：
 - `.env.local` 不提交
@@ -74,7 +88,13 @@ gh repo create amoxuanque/lazymap-reading-agent --public --source=. --remote=ori
 
 ## 回归清单
 
-每次发布前至少做这 6 项：
+每次发布前先跑自动闸门：
+
+```bash
+npm run check:release
+```
+
+自动闸门通过后，再做这 6 项人工回归：
 - 搜一本中文书
 - 搜一本英文书
 - 上传一个 EPUB

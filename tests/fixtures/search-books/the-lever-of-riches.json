@@ -1,0 +1,38 @@
+{
+  "google": {
+    "items": [
+      {
+        "id": "lever-google-1",
+        "volumeInfo": {
+          "title": "The Lever of Riches",
+          "authors": ["Joel Mokyr"],
+          "description": "A history of technological creativity and economic progress.",
+          "publishedDate": "1990-01-01",
+          "categories": ["Economic history"]
+        }
+      },
+      {
+        "id": "noise-google-1",
+        "volumeInfo": {
+          "title": "Riches and Power",
+          "authors": ["Generic Author"],
+          "description": "An unrelated catalog result used to verify ranking stability.",
+          "publishedDate": "2005-01-01",
+          "categories": ["Business"]
+        }
+      }
+    ]
+  },
+  "openLibrary": {
+    "docs": [
+      {
+        "key": "/works/OL45883W",
+        "title": "The Lever of Riches",
+        "author_name": ["Joel Mokyr"],
+        "first_sentence": ["Technology and economic progress are deeply linked."],
+        "first_publish_year": 1990,
+        "publisher": ["Oxford University Press"]
+      }
+    ]
+  }
+}

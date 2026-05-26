@@ -1,0 +1,14 @@
+{
+  "id": "fixture-share-map",
+  "title": "Fixture Share Map",
+  "author": "LazyMap QA",
+  "cover": "https://example.com/fixture-cover.jpg",
+  "saves": 0,
+  "status": "has_map",
+  "visibility": "private",
+  "sourceMeta": {
+    "kind": "generated",
+    "mode": "prototype-fallback",
+    "summary": "Fixture map used for smoke tests."
+  }
+}

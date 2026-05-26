@@ -10,7 +10,12 @@
     "preview": "vite preview",
     "start": "node server.js",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "check:server": "node --check server.js",
+    "test:smoke": "node --test --test-concurrency=1 tests/smoke/api-smoke.test.mjs",
+    "scan:decredit": "node scripts/scan-no-credit-strings.mjs",
+    "scan:secrets": "node scripts/scan-no-secrets.mjs",
+    "check:release": "node scripts/check-release.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
