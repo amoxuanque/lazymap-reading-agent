@@ -321,6 +321,19 @@ test('/api/search-books returns curated author metadata for Chinese seed titles'
   assert.match(payload.results[0].title, /思考.*Thinking, Fast and Slow/);
 });
 
+test('/api/search-books returns curated author metadata for Siddhartha', async () => {
+  const response = await fetch(
+    `http://127.0.0.1:${appPort}/api/search-books?q=${encodeURIComponent('悉达多')}`,
+  );
+  const payload = await getJson(response);
+
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(payload.results));
+  assert.ok(payload.results.length > 0);
+  assert.equal(payload.results[0].author, 'Hermann Hesse');
+  assert.match(payload.results[0].title, /悉达多.*Siddhartha/);
+});
+
 test('/api/search-books does not mismatch The Lever of Riches with The Book of Elon', async () => {
   const response = await fetch(
     `http://127.0.0.1:${appPort}/api/search-books?q=${encodeURIComponent('The Lever of Riches')}`,
@@ -485,6 +498,65 @@ test('/api/generate-map repairs malformed catalog compact seeds with curated loc
 
     await waitForLogsToFlush();
     assert.equal(repairedServer.logs.value.includes('"provider":"prototype-fallback"'), false);
+  } finally {
+    await stopServer(repairedServer);
+    await new Promise((resolve, reject) => {
+      siliconFlowStub.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+});
+
+test('/api/generate-map uses curated Siddhartha seed instead of generic shell content', async () => {
+  const compactContent = `{"oneLoute":" ","overview":["模块"],"quotes":["判断"]`;
+  const siliconFlowPort = await getFreePort();
+  const siliconFlowStub = createSiliconFlowStubServer(compactContent);
+
+  await new Promise((resolve, reject) => {
+    siliconFlowStub.listen(siliconFlowPort, '127.0.0.1', (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+
+  const repairedServer = await startServer({
+    SILICONFLOW_API_KEY: 'YOUR_SILICONFLOW_API_KEY',
+    SILICONFLOW_BASE_URL: `http://127.0.0.1:${siliconFlowPort}`,
+  });
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${repairedServer.port}/api/generate-map`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: '悉达多',
+        sourceKind: 'catalog',
+      }),
+    });
+    const payload = await getJson(response);
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.provider, 'siliconflow');
+    assert.equal(payload.mode, 'title-only');
+    assert.equal(payload.map.author, 'Hermann Hesse');
+    assert.match(payload.map.title, /悉达多.*Siddhartha/);
+    assert.equal(payload.map.oneLiner.zh, '觉悟不能靠抄别人的路');
+    assert.deepEqual(
+      payload.map.overview.cards.map((card) => card.title),
+      ['先离开现成答案', '再让经验替代教条', '把尘世沉浮当成必经之路', '最后在倾听里明白万物同流'],
+    );
+    assert.deepEqual(
+      payload.map.parts.map((part) => part.title),
+      ['离家求道先否定继承答案', '遇见佛陀也不肯照抄觉悟', '在尘世里经历欲望财富与空虚', '回到河流前学会倾听与统一'],
+    );
   } finally {
     await stopServer(repairedServer);
     await new Promise((resolve, reject) => {

@@ -413,6 +413,26 @@ const catalogSeedBooks = [
     },
   },
   {
+    id: 'seed-siddhartha',
+    title: '悉达多 (Siddhartha)',
+    author: 'Hermann Hesse',
+    aliases: ['悉达多', 'Siddhartha', '黑塞', '赫尔曼 黑塞', 'Hermann Hesse'],
+    cover: fallbackCover,
+    oneLiner: { zh: '真正的觉悟不能被转交，只能由一个人亲自活出来。' },
+    saves: 0,
+    status: 'no_map_paid',
+    source: 'catalog',
+    compactSeed: {
+      oneLiner: '觉悟不能靠抄别人的路',
+      about: '黑塞借悉达多写自我追寻、经验、欲望与觉醒',
+      overview: ['先离开现成答案', '再让经验替代教条', '把尘世沉浮当成必经之路', '最后在倾听里明白万物同流'],
+      parts: ['离家求道先否定继承答案', '遇见佛陀也不肯照抄觉悟', '在尘世里经历欲望财富与空虚', '回到河流前学会倾听与统一'],
+      methods: ['别把他人的觉悟当自己的答案', '先经历再判断什么是真理', '把矛盾放回同一条生命线', '学会倾听而不是急着下结论'],
+      quotes: ['关键判断：这本书真正反复确认的，不是找到老师，而是不能替别人活出觉悟。', '关键判断：真理如果只能被讲述却不能被经历，最终仍然不属于你。'],
+      routes: ['先看离家求道，再看尘世沉浮，最后回到河流与觉悟。', '如果只想抓核心判断，重点读与佛陀相遇、尘世经历和河边顿悟。'],
+    },
+  },
+  {
     id: 'seed-sapiens',
     title: '人类简史 (Sapiens)',
     author: 'Yuval Noah Harari',
@@ -3329,6 +3349,8 @@ function isWeakCompactSeedText(value) {
   return (
     !cleaned ||
     cleaned.length < 5 ||
+    /[:：]$/.test(cleaned) ||
+    /[A-Za-z]+_[A-Za-z_]+/.test(cleaned) ||
     /^[\d\s]+$/.test(cleaned) ||
     /^(无|未知|模块|标题|方法|路线|关键判断：?$|《.+》》)$/.test(cleaned) ||
     /^(这本书到底在处理什么问题|作者主要用什么结构展开|读完真正该带走什么|不同读者该怎么读|问题定义|结构展开|方法提炼|阅读路线)$/.test(cleaned)
@@ -3358,6 +3380,23 @@ function mergeCompactSeedList(list, fallbackList, targetLength) {
 function stabilizeCatalogCompactSeed(seed, input, groundingContext = '') {
   const fallback = buildCatalogLocalCompactSeed(input, groundingContext);
   const current = seed && typeof seed === 'object' ? seed : {};
+  const curated = findBestCatalogSeed(current.title || input?.title || '');
+
+  if (curated?.compactSeed) {
+    return {
+      ...current,
+      title: curated.title,
+      author: curated.author,
+      oneLiner: fallback.oneLiner,
+      about: fallback.about,
+      overview: [...fallback.overview],
+      parts: [...fallback.parts],
+      methods: [...fallback.methods],
+      quotes: [...fallback.quotes],
+      routes: [...fallback.routes],
+    };
+  }
+
   const quotes = mergeCompactSeedList(current.quotes, fallback.quotes, 2).map((item) => (
     item.startsWith('关键判断：') ? item : `关键判断：${item.replace(/^["“”']+|["“”']+$/g, '')}`
   ));
