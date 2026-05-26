@@ -10,6 +10,8 @@ dotenv.config({ path: '.env.local' });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const IS_VERCEL = Boolean(process.env.VERCEL);
+const IS_DIRECT_NODE_START = Boolean(process.argv[1] && path.resolve(process.argv[1]) === __filename);
 
 const app = express();
 const PORT = Number(process.env.PORT || 8787);
@@ -4433,7 +4435,7 @@ app.post('/api/translate-map', async (request, response) => {
 });
 
 const distDir = path.join(__dirname, 'dist');
-if (existsSync(distDir)) {
+if (!IS_VERCEL && existsSync(distDir)) {
   app.use(express.static(distDir));
   app.get('*', (request, response, next) => {
     if (request.path.startsWith('/api/')) {
@@ -4444,9 +4446,13 @@ if (existsSync(distDir)) {
   });
 }
 
-app.listen(PORT, () => {
-  logEvent('log', 'server_started', {
-    port: PORT,
-    nodeEnv: NODE_ENV,
+if (IS_DIRECT_NODE_START) {
+  app.listen(PORT, () => {
+    logEvent('log', 'server_started', {
+      port: PORT,
+      nodeEnv: NODE_ENV,
+    });
   });
-});
+}
+
+export default app;

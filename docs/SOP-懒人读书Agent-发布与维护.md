@@ -2,26 +2,37 @@
 
 ## 目标
 
-把 LazyMap 阅读地图 Agent 以可复用、可部署、可继续迭代的方式发布到 GitHub 与 Zeabur，并把关键工作流沉淀为长期资产。
+把 LazyMap 以“Vercel 体验版”的方式稳定上线，并确保发布前可验证、发布后可诊断。
+
+## 当前发布定位
+
+当前版本适合：
+- Vercel 体验版部署
+- 开源体验和 Demo 演示
+- 持续迭代内容质量，但不承诺商用 SLA
+
+当前边界：
+- `shareId` 是进程内存存储，在 Vercel 多实例 / 冷启动 / 重新部署后可能失效
+- 无数据库、无账号体系、无长期持久化分享
+- `baseline:quality` 是观察命令，不是发布强 gate
 
 ## 代码基线
 
 发布前必须确认：
 - 上传链路可解析 `EPUB / TXT / MD`
-- 搜书入口不依赖 Tavily 兜底候选，优先本地图库、Google Books、Open Library
-- 地图 grounding 仍保留 Tavily，用于章节、金句、结构线索补强
+- 搜书入口优先本地图库、Google Books、Open Library
+- Tavily 仅用于 grounding 增强，不是正式生成必需项
 - 地图只保留中文界面
-- 积分逻辑只有两种用户动作：
-  - 上传文件生成：`50` 积分
-  - 全网搜索生成：`150` 积分
+- `check:release` 与 `baseline:quality` 均通过
 
-## 发布步骤
+## 发布前命令
 
-1. 在正式目录执行：
+在正式目录执行：
 
 ```bash
 npm install
 npm run check:release
+npm run baseline:quality
 ```
 
 `npm run check:release` 当前会串行执行：
@@ -35,56 +46,44 @@ npm run check:release
 通过口径：
 - 构建、类型检查、后端语法检查全部通过
 - 核心 API smoke 通过：`/api/health`、`/api/search-books`、`/api/generate-map`、`/api/share-map`
-- 不依赖真实外部 API Key 也能跑通大部分回归
 - `src/` 中不出现被禁止的积分文案与 `consumeCredits`
-- `.env.local` 未入库，仓库 tracked files 中无明显明文 API Key
+- `.env.local` 未入库，tracked files 中无明显明文 API Key
 
-2. 检查敏感信息：
+## 敏感信息规则
+
 - `.env.local` 不提交
-- 只保留 `.env.example`
+- 仓库只保留 `.env.example`
+- 日志默认不记录：
+  - API Key
+  - 上传全文正文
+  - prompt 原文
 
-3. 初始化或更新 git：
+## Vercel 部署
 
-```bash
-git init
-git add .
-git commit -m "feat: release LazyMap reading agent"
-```
+当前最推荐：Vercel 体验版。
 
-4. 新建远端仓库并推送：
+推荐配置：
+- Framework Preset: 保持自动检测即可，运行细节以 `vercel.json` 为准
+- Install Command: `npm install`
+- Build Command: `npm run build`
+- Output Directory: `dist`
 
-```bash
-gh repo create amoxuanque/lazymap-reading-agent --public --source=. --remote=origin --push
-```
-
-## Zeabur 部署
-
-环境变量：
-- `PORT`
+最低环境变量：
 - `SILICONFLOW_API_KEY`
-- `SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1`
+
+可选增强：
 - `TAVILY_API_KEY`
+- 其他模型和超时变量按 `.env.example` 补充
 
-运行建议：
-- 前端：Vite build 后静态托管
-- 后端：`node server.js`
+生产建议：
+- 显式设置 `ALLOW_PROTOTYPE_FALLBACK=false`
 
-## 日常迭代规则
-
-1. 搜书质量问题优先检查：
-- 作者命中率
-- 封面命中率
-- 候选卡是否出现无作者脏结果
-
-2. 地图质量问题优先检查：
-- 方法卡数量是否被压缩
-- 金句是否来自 grounding
-- 模块标题是否是“编辑式判断”而不是摘要标题
-
-3. UI 改动约束：
-- 默认只保留中文
-- 不向用户暴露内部 API 成本、利润率、模型切换逻辑
-- 积分提示只保留动作级表达
+说明：
+- 当前 `server.js` 会在本地 `npm start` 时 `listen`
+- 在 Vercel 上则作为 Function 入口导出
+- 非 `/api/*` 路由由前端静态产物承接
+- `/api/*` 继续由 Express 处理
+- `shareId` 仅作为不稳定体验能力保留
 
 ## 诊断口径
 
@@ -95,20 +94,16 @@ gh repo create amoxuanque/lazymap-reading-agent --public --source=. --remote=ori
 - 是否 `degraded`
 - 是否 `fallback_used`
 - `provider / mode / sourceKind`
- - 若是 `/api/generate-map`，继续看 `generate_map_summary` 里的阶段耗时与 `fallbackReason`
-3. 日志默认不记录：
-- API Key
-- 上传全文正文
-- prompt 原文
-4. 健康检查优先看两个接口：
-- `/api/health`：兼容性健康入口，始终返回服务摘要与依赖诊断
-- `/api/ready`：正式服务就绪判断，`200` 表示 formal generation path 可用，`503` 表示仍处于 `unconfigured`
-5. 当前状态解释：
+- 若是 `/api/generate-map`，继续看 `generate_map_summary`
+3. 健康检查优先看两个接口：
+- `GET /api/health`
+- `GET /api/ready`
+4. 当前状态解释：
 - `live`：进程正常、接口可响应
 - `ready`：SiliconFlow 正式生成链路配置齐全
 - `degraded`：正式生成可用，但 Tavily 或书目元数据依赖缺失
 - `unconfigured`：缺关键正式生成配置，只能 fallback 或无法正式生成
-6. 当前生成链路阶段观测重点看：
+5. 当前生成链路阶段观测重点看：
 - `request_validation`
 - `search_or_source_parse`
 - `grounding`
@@ -119,23 +114,34 @@ gh repo create amoxuanque/lazymap-reading-agent --public --source=. --remote=ori
 - `cover_lookup`
 - `fallback`
 - `response_build`
-7. 内容质量基线与性能预算观察命令：
-- `npm run baseline:quality`
-- 该命令不纳入 `check:release`
-- 用于记录固定样本的 provider / mode / fallback / totalDurationMs，不用于自动判内容“好坏”
+
+## 上线后验收
+
+上线后至少做一次：
+
+1. 打开首页 `/`
+2. `GET /api/health`
+3. `GET /api/ready`
+4. 搜书 `The Lever of Riches`，确认不误配 `The Book of Elon`
+5. catalog 生成一次
+6. upload 生成一次
+7. `shareId` 创建和读取一次
+8. 检查响应头存在 `X-Request-Id`
+9. 检查日志存在 `request_completed`
+10. 检查生成日志存在 `generate_map_summary`
 
 ## 回归清单
 
-每次发布前先跑自动闸门：
+每次发布前先跑：
 
 ```bash
 npm run check:release
+npm run baseline:quality
 ```
 
-自动闸门通过后，再做这 6 项人工回归：
+自动检查通过后，再做这些人工回归：
 - 搜一本中文书
 - 搜一本英文书
-- 上传一个 EPUB
+- 上传一个 `EPUB` 或 `TXT`
 - 打开地图详情页
-- 复制分享链接
-- 查看积分扣减是否正确
+- 创建一条分享链接并读取一次
