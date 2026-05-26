@@ -718,11 +718,31 @@ function buildPrototypeMap(input) {
   const title = input.title || '未命名书稿';
   const paragraphs = splitParagraphs(input.content);
   const excerpt = paragraphs.slice(0, 4);
+  const curatedCatalogSeed = input.sourceKind === 'catalog' ? buildCatalogLocalCompactSeed(input) : null;
+  const curatedOverview = curatedCatalogSeed?.overview || [];
+  const curatedParts = curatedCatalogSeed?.parts || [];
+  const curatedMethods = curatedCatalogSeed?.methods || [];
+  const curatedQuotes = curatedCatalogSeed?.quotes || [];
+  const curatedRoutes = curatedCatalogSeed?.routes || [];
   const aboutText =
     excerpt.length > 0
       ? excerpt.join(' ').slice(0, 240)
-      : `这张阅读地图围绕《${title}》的核心问题、结构展开、关键判断与阅读路线进行整理，帮助先抓骨架，再进入细节。`;
+      : (curatedCatalogSeed?.about || `这张阅读地图围绕《${title}》的核心问题、结构展开、关键判断与阅读路线进行整理，帮助先抓骨架，再进入细节。`);
   const titleSlug = toSlug(title) || `generated-${Date.now()}`;
+  const derivedDebates = curatedCatalogSeed
+    ? [
+        {
+          title: `${curatedParts[0] || '这本书的第一判断'}为什么值得先抓`,
+          value: `${curatedCatalogSeed.about || `先抓《${title}》的主问题和判断框架，能更快决定这本书值不值得深读。`}`,
+          reservation: `即便入口已经明确，${title} 的完整论证和章节推进仍需要回到原书确认。`,
+        },
+        {
+          title: `${curatedQuotes[0]?.replace(/^关键判断：/, '').slice(0, 20) || '这本书的核心判断'}是否容易被读浅`,
+          value: `如果先按 ${curatedRoutes[0] || '主问题 -> 判断 -> 读法'} 进入，这本书的价值会比一句结论更清楚。`,
+          reservation: `但如果只消费压缩后的判断，不看原书例证和边界，依然容易把它读成“广义正确”。`,
+        },
+      ]
+    : null;
 
   return {
     id: `generated-${titleSlug}-${Date.now()}`,
@@ -731,7 +751,7 @@ function buildPrototypeMap(input) {
     cover: fallbackCover,
     aliases: [title],
     oneLiner: {
-      zh: `把《${title}》的核心问题、结构展开与关键判断压成一张可浏览的阅读地图。`,
+      zh: curatedCatalogSeed?.oneLiner || `把《${title}》的核心问题、结构展开与关键判断压成一张可浏览的阅读地图。`,
       en: `A reading map for ${title}.`,
     },
     about: {
@@ -751,30 +771,38 @@ function buildPrototypeMap(input) {
       cards: [
         {
           layer: '第一层',
-          title: '这本书到底在处理什么问题',
+          title: curatedOverview[0] || '这本书到底在处理什么问题',
           desc: excerpt[0] || `先围绕《${title}》的核心命题建立阅读入口，避免一上来就掉进细节。`,
-          points: ['主问题', '核心判断', '阅读价值'],
+          points: curatedOverview[0]
+            ? [curatedOverview[0], curatedMethods[0] || '核心判断', '阅读价值']
+            : ['主问题', '核心判断', '阅读价值'],
           color: 'from-orange-500 to-amber-500',
         },
         {
           layer: '第二层',
-          title: '作者主要用什么结构展开',
-          desc: excerpt[1] || '把章节重新压缩成模块，让阅读先看到骨架再进细节。',
-          points: ['背景铺垫', '结构骨架', '关键转折'],
+          title: curatedOverview[1] || '作者主要用什么结构展开',
+          desc: excerpt[1] || (curatedParts[1] ? `${curatedParts[1]} 是进入这本书中段结构的关键转折。` : '把章节重新压缩成模块，让阅读先看到骨架再进细节。'),
+          points: curatedOverview[1]
+            ? [curatedOverview[1], curatedParts[1] || '结构骨架', '关键转折']
+            : ['背景铺垫', '结构骨架', '关键转折'],
           color: 'from-sky-500 to-cyan-500',
         },
         {
           layer: '第三层',
-          title: '读完真正该带走什么',
-          desc: excerpt[2] || '把原文里可复用的判断、方法和提醒收成携带型结构。',
-          points: ['判断标准', '方法提炼', '行动抓手'],
+          title: curatedOverview[2] || '读完真正该带走什么',
+          desc: excerpt[2] || (curatedMethods[2] ? `${curatedMethods[2]} 更像这本书里值得直接带走的一步判断动作。` : '把原文里可复用的判断、方法和提醒收成携带型结构。'),
+          points: curatedOverview[2]
+            ? [curatedOverview[2], curatedMethods[2] || '方法提炼', '行动抓手']
+            : ['判断标准', '方法提炼', '行动抓手'],
           color: 'from-emerald-500 to-teal-500',
         },
         {
           layer: '第四层',
-          title: '不同读者该怎么读',
-          desc: excerpt[3] || '不是每个人都要完整读完，所以地图要给不同阅读路径。',
-          points: ['速读路线', '工作路线', '深读路线'],
+          title: curatedOverview[3] || '不同读者该怎么读',
+          desc: excerpt[3] || (curatedRoutes[0] || '不是每个人都要完整读完，所以地图要给不同阅读路径。'),
+          points: curatedOverview[3]
+            ? [curatedOverview[3], curatedRoutes[0] || '速读路线', curatedRoutes[1] || '深读路线']
+            : ['速读路线', '工作路线', '深读路线'],
           color: 'from-fuchsia-500 to-pink-500',
         },
       ],
@@ -794,61 +822,68 @@ function buildPrototypeMap(input) {
     parts: [
       {
         id: 'part-1',
-        title: '问题定义',
+        title: curatedParts[0] || '问题定义',
         subtitle: '第一部分',
-        navDesc: '先判断这本书要解决的核心问题。',
-        intro: excerpt[0] || '第一部分用于建立进入这本书的基本语境。',
+        navDesc: curatedParts[0] ? `${curatedParts[0]} 是最值得先读懂的一段判断。` : '先判断这本书要解决的核心问题。',
+        intro: excerpt[0] || (curatedParts[0] ? `${curatedParts[0]} 用来建立进入这本书的基本语境。` : '第一部分用于建立进入这本书的基本语境。'),
         tags: ['先看命题', '适合快速判断值不值得读'],
-        task: '搞清楚作者真正的主问题。',
-        takeaways: ['别急着记结论，先抓问题定义。'],
-        chapters: ['背景', '命题', '切入角度'],
+        task: curatedMethods[0] || '搞清楚作者真正的主问题。',
+        takeaways: curatedParts[0] ? [curatedParts[0], curatedMethods[0] || '先抓主问题', '别急着记结论'] : ['别急着记结论，先抓问题定义。'],
+        chapters: curatedParts[0] ? [curatedParts[0], curatedOverview[0] || '命题', curatedMethods[0] || '切入角度'] : ['背景', '命题', '切入角度'],
         position: '这是所有后续内容的入口。',
       },
       {
         id: 'part-2',
-        title: '结构展开',
+        title: curatedParts[1] || '结构展开',
         subtitle: '第二部分',
-        navDesc: '把原始章节压成更容易浏览的中层结构。',
-        intro: excerpt[1] || '这一部分回答作者如何一步步展开论证。',
+        navDesc: curatedParts[1] ? `${curatedParts[1]} 是理解作者如何展开论证的关键部分。` : '把原始章节压成更容易浏览的中层结构。',
+        intro: excerpt[1] || (curatedParts[1] ? `${curatedParts[1]} 回答作者如何一步步展开论证。` : '这一部分回答作者如何一步步展开论证。'),
         tags: ['适合扫骨架', '适合快速浏览'],
-        task: '理解全书结构不是目录，而是推进路径。',
-        takeaways: ['先看模块关系，再决定要不要精读。'],
-        chapters: ['模块 A', '模块 B', '模块 C'],
+        task: curatedMethods[1] || '理解全书结构不是目录，而是推进路径。',
+        takeaways: curatedParts[1] ? [curatedParts[1], curatedMethods[1] || '先看模块关系', '再决定要不要精读'] : ['先看模块关系，再决定要不要精读。'],
+        chapters: curatedParts[1] ? [curatedParts[1], curatedOverview[1] || '模块 B', curatedMethods[1] || '模块 C'] : ['模块 A', '模块 B', '模块 C'],
         position: '它决定你怎么读这本书更省时间。',
       },
       {
         id: 'part-3',
-        title: '方法提炼',
+        title: curatedParts[2] || '方法提炼',
         subtitle: '第三部分',
-        navDesc: '把可复用的方法和判断从文本里捞出来。',
-        intro: excerpt[2] || '这里不是复述，而是提取对工作和思考有用的方法。',
+        navDesc: curatedParts[2] ? `${curatedParts[2]} 更像一组可复用的方法入口。` : '把可复用的方法和判断从文本里捞出来。',
+        intro: excerpt[2] || (curatedParts[2] ? `${curatedParts[2]} 不是复述，而是提取对工作和思考有用的方法。` : '这里不是复述，而是提取对工作和思考有用的方法。'),
         tags: ['可复用', '适合做工作素材'],
-        task: '提炼值得带走的方法、判断和提醒。',
-        takeaways: ['方法要能迁移到别的场景。'],
-        chapters: ['判断标准', '方法动作', '常见误区'],
+        task: curatedMethods[2] || '提炼值得带走的方法、判断和提醒。',
+        takeaways: curatedParts[2] ? [curatedParts[2], curatedMethods[2] || '方法要能迁移', '回到原书看边界'] : ['方法要能迁移到别的场景。'],
+        chapters: curatedParts[2] ? [curatedParts[2], curatedMethods[2] || '方法动作', curatedQuotes[0]?.replace(/^关键判断：/, '').slice(0, 12) || '常见误区'] : ['判断标准', '方法动作', '常见误区'],
         position: '这是把阅读结果资产化的关键一层。',
       },
       {
         id: 'part-4',
-        title: '阅读路线',
+        title: curatedParts[3] || '阅读路线',
         subtitle: '第四部分',
-        navDesc: '不同读者不必读同一条路线。',
-        intro: excerpt[3] || '最后一层负责把地图变成真正可用的阅读产品。',
+        navDesc: curatedParts[3] ? `${curatedParts[3]} 决定不同读者应该怎样进入这本书。` : '不同读者不必读同一条路线。',
+        intro: excerpt[3] || (curatedParts[3] ? `${curatedParts[3]} 负责把这张地图变成真正可用的阅读产品。` : '最后一层负责把地图变成真正可用的阅读产品。'),
         tags: ['速读', '深读', '复盘'],
-        task: '把不同阅读目标切成不同路线。',
-        takeaways: ['地图不是只有一种读法。'],
-        chapters: ['速读路线', '工作路线', '深读路线'],
+        task: curatedMethods[3] || '把不同阅读目标切成不同路线。',
+        takeaways: curatedRoutes.length ? curatedRoutes.slice(0, 2).concat('地图不是只有一种读法。').slice(0, 3) : ['地图不是只有一种读法。'],
+        chapters: curatedRoutes.length ? [curatedRoutes[0], curatedRoutes[1] || '工作路线', '深读路线'].slice(0, 3) : ['速读路线', '工作路线', '深读路线'],
         position: '它让地图比普通摘要更可用。',
       },
     ],
     methods: {
-      categories: ['问题定义', '结构压缩', '方法提炼', '阅读路线'],
-      items: [
-        { id: '01', category: '问题定义', title: '先问主问题', desc: '每本书都有一个真正的主问题，先抓这个。' },
-        { id: '02', category: '结构压缩', title: '章节不等于结构', desc: '要把章节压成少数几个真正有用的模块。' },
-        { id: '03', category: '方法提炼', title: '把观点改写成动作', desc: '能迁移的内容，才适合变成地图资产。' },
-        { id: '04', category: '阅读路线', title: '给不同用户不同读法', desc: '速读、工作、深读的入口要明确分开。' },
-      ],
+      categories: curatedMethods.length ? ['阅读入口', '判断框架', '决策动作', '阅读路线'] : ['问题定义', '结构压缩', '方法提炼', '阅读路线'],
+      items: curatedMethods.length
+        ? curatedMethods.map((item, index) => ({
+          id: String(index + 1).padStart(2, '0'),
+          category: ['阅读入口', '判断框架', '决策动作', '阅读路线'][index % 4],
+          title: item,
+          desc: `把“${item}”当作进入《${title}》的一步判断动作。`,
+        }))
+        : [
+          { id: '01', category: '问题定义', title: '先问主问题', desc: '每本书都有一个真正的主问题，先抓这个。' },
+          { id: '02', category: '结构压缩', title: '章节不等于结构', desc: '要把章节压成少数几个真正有用的模块。' },
+          { id: '03', category: '方法提炼', title: '把观点改写成动作', desc: '能迁移的内容，才适合变成地图资产。' },
+          { id: '04', category: '阅读路线', title: '给不同用户不同读法', desc: '速读、工作、深读的入口要明确分开。' },
+        ],
     },
     timeline: [
       { year: '第一步', title: '先读命题', desc: '先确认这本书在处理什么问题。' },
@@ -856,12 +891,22 @@ function buildPrototypeMap(input) {
       { year: '第三步', title: '提炼判断', desc: '把能迁移到工作和思考中的方法先拿出来。' },
       { year: '第四步', title: '选择读法', desc: '根据目标在速读、工作和深读之间选择路线。' },
     ],
-    quotes: [{ quote: `《${title}》真正值得看的，不只是结论，而是作者如何组织问题、展开结构并提出判断。`, note: '先抓问题和结构，再决定要深读哪些章节。' }],
-    debates: [{ title: '这本书最值得先抓住什么', value: '先抓核心命题、结构推进和可迁移的方法卡，再进入细节。', reservation: '如果要做更细的章节级阅读，仍需要回到原书逐章对照。' }],
-    routes: [
-      { audience: '先快速判断值不值得读的人', route: '先看总览、知识地图、阅读路线。', focus: ['主问题', '四层结构', '速读入口'] },
-      { audience: '要拿来工作的用户', route: '重点看方法提炼和 debate。', focus: ['方法卡', '适用边界', '行动抓手'] },
-    ],
+    quotes: curatedQuotes.length
+      ? curatedQuotes.map((quote, index) => ({
+        quote,
+        note: index === 0 ? '先用这条判断建立入口，再决定是否回原书深读。' : '这条判断更适合用来提醒自己阅读时该警惕什么。',
+      }))
+      : [{ quote: `《${title}》真正值得看的，不只是结论，而是作者如何组织问题、展开结构并提出判断。`, note: '先抓问题和结构，再决定要深读哪些章节。' }],
+    debates: derivedDebates || [{ title: '这本书最值得先抓住什么', value: '先抓核心命题、结构推进和可迁移的方法卡，再进入细节。', reservation: '如果要做更细的章节级阅读，仍需要回到原书逐章对照。' }],
+    routes: curatedRoutes.length
+      ? [
+        { audience: '先快速判断值不值得读的人', route: curatedRoutes[0], focus: ['主问题', '关键判断', '阅读入口'] },
+        { audience: '已经知道这本书但没系统读过的人', route: curatedRoutes[1] || curatedRoutes[0], focus: ['结构推进', '方法动作', '回原书点位'] },
+      ]
+      : [
+        { audience: '先快速判断值不值得读的人', route: '先看总览、知识地图、阅读路线。', focus: ['主问题', '四层结构', '速读入口'] },
+        { audience: '要拿来工作的用户', route: '重点看方法提炼和 debate。', focus: ['方法卡', '适用边界', '行动抓手'] },
+      ],
     saves: 0,
     status: 'has_map',
     visibility: 'private',
