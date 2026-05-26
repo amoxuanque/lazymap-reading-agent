@@ -1,0 +1,66 @@
+[
+  {
+    "sampleId": "catalog-atomic-habits",
+    "kind": "generate",
+    "sourceKind": "catalog",
+    "title": "Atomic Habits",
+    "author": "James Clear",
+    "expectedMode": "environment-dependent",
+    "focus": [
+      "热门英文书是否保持结构完整",
+      "不应退化成与书名无关的泛化内容",
+      "关注 formal 与 prototype-fallback 的模式差异"
+    ]
+  },
+  {
+    "sampleId": "catalog-the-lever-of-riches",
+    "kind": "generate",
+    "sourceKind": "catalog",
+    "title": "The Lever of Riches",
+    "author": "Joel Mokyr",
+    "expectedMode": "environment-dependent",
+    "focus": [
+      "冷门英文书是否发生错配",
+      "是否围绕真实书名展开",
+      "观察 fallback 情况与总耗时"
+    ]
+  },
+  {
+    "sampleId": "catalog-zhizhenshinei",
+    "kind": "generate",
+    "sourceKind": "catalog",
+    "title": "置身事内",
+    "author": "兰小欢",
+    "expectedMode": "environment-dependent",
+    "focus": [
+      "中文 catalog 样本的书名贴合度",
+      "是否出现明显英文热门书错配",
+      "关注 routes / parts / methods 的结构齐备性"
+    ]
+  },
+  {
+    "sampleId": "upload-reading-map-sample",
+    "kind": "generate",
+    "sourceKind": "upload",
+    "title": "上传样本",
+    "author": "",
+    "fixturePath": "tests/fixtures/upload-sample.txt",
+    "expectedMode": "environment-dependent",
+    "focus": [
+      "上传正文模式下是否保持正文贴合",
+      "不应泄露上传全文到日志",
+      "观察 upload 模式的总耗时与 model 阶段耗时"
+    ]
+  },
+  {
+    "sampleId": "share-fixture-read",
+    "kind": "share",
+    "fixturePath": "tests/fixtures/share-map.json",
+    "expectedMode": "n/a",
+    "focus": [
+      "shareId 读取不应回落第一本书",
+      "接口状态必须稳定",
+      "作为回归样本保留"
+    ]
+  }
+]

@@ -13,6 +13,7 @@
     "lint": "tsc --noEmit",
     "check:server": "node --check server.js",
     "test:smoke": "node --test --test-concurrency=1 tests/smoke/api-smoke.test.mjs",
+    "baseline:quality": "node scripts/quality-baseline.mjs",
     "scan:decredit": "node scripts/scan-no-credit-strings.mjs",
     "scan:secrets": "node scripts/scan-no-secrets.mjs",
     "check:release": "node scripts/check-release.mjs"

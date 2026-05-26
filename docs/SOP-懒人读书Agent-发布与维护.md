@@ -119,6 +119,10 @@ gh repo create amoxuanque/lazymap-reading-agent --public --source=. --remote=ori
 - `cover_lookup`
 - `fallback`
 - `response_build`
+7. 内容质量基线与性能预算观察命令：
+- `npm run baseline:quality`
+- 该命令不纳入 `check:release`
+- 用于记录固定样本的 provider / mode / fallback / totalDurationMs，不用于自动判内容“好坏”
 
 ## 回归清单
 
