@@ -122,6 +122,29 @@ async function waitForServer(url, timeoutMs = 10000, getLogs = () => serverLogs)
   throw new Error(`Server did not become ready in time. Last error: ${String(lastError)}\n${getLogs()}`);
 }
 
+function createSiliconFlowStubServer(compactContent) {
+  return http.createServer(async (request, response) => {
+    const url = new URL(request.url || '/', 'http://127.0.0.1');
+    response.setHeader('Content-Type', 'application/json; charset=utf-8');
+
+    if (request.method === 'POST' && url.pathname === '/chat/completions') {
+      response.end(JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: compactContent,
+            },
+          },
+        ],
+      }));
+      return;
+    }
+
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: 'Not found' }));
+  });
+}
+
 function createStubServer() {
   return http.createServer((request, response) => {
     const url = new URL(request.url || '/', `http://127.0.0.1:${stubPort}`);
@@ -344,6 +367,67 @@ test('/api/generate-map supports upload smoke without external model keys', asyn
   assert.equal(serverLogs.includes('真正有效的阅读，不是尽快得到结论'), false);
   assert.equal(serverLogs.includes('Output valid JSON only.'), false);
   assert.equal(serverLogs.includes('YOUR_SILICONFLOW_API_KEY'), false);
+});
+
+test('/api/generate-map repairs malformed upload compact seeds and stays source-grounded', async () => {
+  const compactContent = `{"oneLiner":"复杂系统先看约束","about":"先看约束如何决定行为","overview1":"先看约束","overview2":"再看反复问题","part1":"约束决定行为","part2":"反复问题决定结构","method1":"先找约束","method2":"再找重复问题","quote1":"关键判断：复杂系统不是把元素堆起来，而是先看约束如何决定行为。","route1":"先看约束再看结构"`;
+  const siliconFlowPort = await getFreePort();
+  const siliconFlowStub = createSiliconFlowStubServer(compactContent);
+
+  await new Promise((resolve, reject) => {
+    siliconFlowStub.listen(siliconFlowPort, '127.0.0.1', (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+
+  const repairedServer = await startServer({
+    SILICONFLOW_API_KEY: 'YOUR_SILICONFLOW_API_KEY',
+    SILICONFLOW_BASE_URL: `http://127.0.0.1:${siliconFlowPort}`,
+  });
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${repairedServer.port}/api/generate-map`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: '上传样本',
+        sourceKind: 'upload',
+        content: uploadSample,
+      }),
+    });
+    const payload = await getJson(response);
+
+    assert.equal(response.status, 200);
+    assert.ok(response.headers.get('x-request-id'));
+    assert.equal(payload.provider, 'siliconflow');
+    assert.equal(payload.mode, 'source-grounded');
+    assert.equal(payload.map.sourceMeta.kind, 'upload');
+    assert.equal(payload.map.sourceMeta.mode, 'source-grounded');
+    assert.ok(payload.map.parts.length >= 2);
+    assert.ok(payload.map.methods.items.length >= 2);
+
+    await waitForLogsToFlush();
+    assert.equal(repairedServer.logs.value.includes('generate_map_summary'), true);
+    assert.equal(repairedServer.logs.value.includes('"provider":"prototype-fallback"'), false);
+    assert.equal(repairedServer.logs.value.includes('复杂系统不是把元素堆起来'), false);
+    assert.equal(repairedServer.logs.value.includes('Output valid JSON only.'), false);
+    assert.equal(repairedServer.logs.value.includes('YOUR_SILICONFLOW_API_KEY'), false);
+  } finally {
+    await stopServer(repairedServer);
+    await new Promise((resolve, reject) => {
+      siliconFlowStub.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
 });
 
 test('/api/share-map creates and reads share ids, and invalid ids return 404', async () => {

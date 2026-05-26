@@ -2350,6 +2350,59 @@ function extractLooseStringArray(segment, limit) {
   return values;
 }
 
+function splitLooseSeedList(value, limit = 4) {
+  const source = String(value || '')
+    .replace(/\r/g, '\n')
+    .replace(/[•·]/g, '-')
+    .trim();
+  if (!source) {
+    return [];
+  }
+
+  const normalizedLines = source
+    .split('\n')
+    .flatMap((line) => line.split(/(?=\s*(?:\d+[.)、]|[一二三四五六七八九十]+[、.)]|[-*])\s+)/))
+    .map((item) => trimText(item).replace(/^(?:\d+[.)、]|[一二三四五六七八九十]+[、.)]|[-*])\s*/g, ''))
+    .filter(Boolean);
+
+  if (normalizedLines.length > 1) {
+    return normalizedLines.slice(0, limit);
+  }
+
+  return [trimText(source)].filter(Boolean).slice(0, limit);
+}
+
+function extractIndexedLooseStringFields(segment, prefixes, limit = 4) {
+  const source = String(segment || '');
+  const prefixPattern = prefixes
+    .map((prefix) => String(prefix || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .filter(Boolean)
+    .join('|');
+  if (!source || !prefixPattern) {
+    return [];
+  }
+
+  const matches = [];
+  const regex = new RegExp(`"(${prefixPattern})(?:[_-]?(\\d+))"\\s*:\\s*"([^"\\n\\r]{2,220})(?:"|$)`, 'ig');
+  let match;
+  while ((match = regex.exec(source))) {
+    const order = Number(match[2] || matches.length + 1);
+    const values = splitLooseSeedList(match[3], limit);
+    values.forEach((value, index) => {
+      matches.push({
+        order: order + index / 10,
+        value,
+      });
+    });
+  }
+
+  return matches
+    .sort((left, right) => left.order - right.order)
+    .map((item) => item.value)
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
 function repairCompactSeedJson(text) {
   const cleaned = stripCodeFence(text)
     .replace(/[\u0000-\u0019]+/g, ' ')
@@ -2374,28 +2427,48 @@ function repairCompactSeedJson(text) {
   };
 
   if (repaired.overview.length === 0) {
-    repaired.overview = [extractLooseStringField(overviewSegment, 'overview')].filter(Boolean);
+    repaired.overview = [
+      ...splitLooseSeedList(extractLooseStringField(overviewSegment, 'overview'), 4),
+      ...extractIndexedLooseStringFields(cleaned, ['overview'], 4),
+    ]
+      .filter(Boolean)
+      .slice(0, 4);
   }
   if (repaired.parts.length === 0) {
     repaired.parts = [
-      extractLooseStringField(partsSegment, 'parts'),
-      extractLooseStringField(partsSegment, 'part'),
-    ].filter(Boolean);
+      ...splitLooseSeedList(extractLooseStringField(partsSegment, 'parts'), 4),
+      ...splitLooseSeedList(extractLooseStringField(partsSegment, 'part'), 4),
+      ...extractIndexedLooseStringFields(cleaned, ['parts', 'part'], 4),
+    ]
+      .filter(Boolean)
+      .slice(0, 4);
   }
   if (repaired.methods.length === 0) {
-    repaired.methods = [extractLooseStringField(methodsSegment, 'methods')].filter(Boolean);
+    repaired.methods = [
+      ...splitLooseSeedList(extractLooseStringField(methodsSegment, 'methods'), 4),
+      ...splitLooseSeedList(extractLooseStringField(methodsSegment, 'method'), 4),
+      ...extractIndexedLooseStringFields(cleaned, ['methods', 'method'], 4),
+    ]
+      .filter(Boolean)
+      .slice(0, 4);
   }
   if (repaired.quotes.length === 0) {
     repaired.quotes = [
-      extractLooseStringField(quotesSegment, 'quotes'),
-      extractLooseStringField(quotesSegment, 'quote'),
-    ].filter(Boolean);
+      ...splitLooseSeedList(extractLooseStringField(quotesSegment, 'quotes'), 2),
+      ...splitLooseSeedList(extractLooseStringField(quotesSegment, 'quote'), 2),
+      ...extractIndexedLooseStringFields(cleaned, ['quotes', 'quote'], 2),
+    ]
+      .filter(Boolean)
+      .slice(0, 2);
   }
   if (repaired.routes.length === 0) {
     repaired.routes = [
-      extractLooseStringField(routesSegment, 'routes'),
-      extractLooseStringField(routesSegment, 'route'),
-    ].filter(Boolean);
+      ...splitLooseSeedList(extractLooseStringField(routesSegment, 'routes'), 2),
+      ...splitLooseSeedList(extractLooseStringField(routesSegment, 'route'), 2),
+      ...extractIndexedLooseStringFields(cleaned, ['routes', 'route'], 2),
+    ]
+      .filter(Boolean)
+      .slice(0, 2);
   }
 
   if (!repaired.oneLiner) {
@@ -2919,6 +2992,58 @@ function buildCompressedUploadContent(text) {
   ].join('\n\n');
 
   return compressed.slice(0, UPLOAD_COMPRESSED_TEXT_MAX_CHARS);
+}
+
+function compactUploadSeedText(text, maxLength = 24) {
+  return trimText(String(text || ''))
+    .replace(/^第[\d一二三四五六七八九十百千]+[章节部卷篇回]\s*/g, '')
+    .replace(/^[：:、\-*•\d.)\s]+/g, '')
+    .replace(/[。！？!?；;，,：:]+$/g, '')
+    .slice(0, maxLength);
+}
+
+function buildUploadLocalCompactSeed(input, compressedContent = '') {
+  const normalizedContent = String(input?.content || '').replace(/\r/g, '\n');
+  const sourceText = trimText(normalizedContent) || trimText(compressedContent);
+  const sentenceHints = splitSentences(sourceText)
+    .map((sentence) => compactUploadSeedText(sentence, 26))
+    .filter((sentence) => sentence.length >= 6)
+    .slice(0, 8);
+  const headingHints = extractHeadingHints(normalizedContent)
+    .map((heading) => compactUploadSeedText(heading, 24))
+    .filter(Boolean)
+    .slice(0, 4);
+  const uniqueHints = [...new Set([...headingHints, ...sentenceHints])];
+
+  const overview = uniqueHints.slice(0, 4);
+  const parts = (headingHints.length >= 2 ? headingHints : uniqueHints).slice(0, 4);
+  const methods = sentenceHints
+    .map((sentence) => {
+      if (/^(先|再|把|别|从|回到|沿着)/.test(sentence)) {
+        return sentence;
+      }
+      return `先看${sentence}`;
+    })
+    .slice(0, 4);
+  const quotes = sentenceHints
+    .filter((sentence) => sentence.length >= 10)
+    .slice(0, 2)
+    .map((sentence) => (sentence.startsWith('关键判断：') ? sentence : `关键判断：${sentence}`));
+  const routes = parts.length >= 2
+    ? [`先看${parts[0]}，再看${parts[1]}`]
+    : ['先看正文主问题，再回到关键段落'];
+  const oneLiner = overview[0] || compactUploadSeedText(input?.title || '上传正文阅读地图', 18);
+  const about = sentenceHints.slice(0, 2).join('，').slice(0, 40) || `基于上传正文整理《${input?.title || '上传内容'}》的阅读骨架。`;
+
+  return {
+    oneLiner,
+    about,
+    overview: overview.length ? overview : [oneLiner],
+    parts: parts.length ? parts : overview.slice(0, 2),
+    methods: methods.length ? methods : [`先看${oneLiner}`],
+    quotes: quotes.length ? quotes : [`关键判断：${oneLiner}`],
+    routes,
+  };
 }
 
 const editorialStyleGuide = `
@@ -4136,7 +4261,29 @@ app.post('/api/generate-map', async (request, response) => {
         jsonRepairMode: 'compact-seed',
       })
     ));
-    const seed = stageTracker.runSync('seed_parse_or_repair', () => extractJsonCandidate(seedContent, 'compact-seed'));
+    let seedRepairRecovery = null;
+    const seed = stageTracker.runSync('seed_parse_or_repair', () => {
+      try {
+        return extractJsonCandidate(seedContent, 'compact-seed');
+      } catch (error) {
+        if (input.sourceKind === 'upload' && error instanceof SyntaxError) {
+          seedRepairRecovery = error.parseFailureKind || 'json_parse_error';
+          return buildUploadLocalCompactSeed(input, sourcePreparation.compressedContent);
+        }
+        throw error;
+      }
+    });
+    if (seedRepairRecovery) {
+      appendRequestLogMeta({
+        seedRepairStrategy: 'upload_local_seed',
+        seedRepairRecovery,
+      });
+      logEvent('warn', 'upload_seed_repaired_locally', {
+        recovery: 'upload_local_seed',
+        seedRepairRecovery,
+        ...generateMeta,
+      });
+    }
     const raw = stageTracker.runSync('inflate', () => inflateCompactReadingMapSeed(seed, input));
     const map = stageTracker.runSync('normalize', () => normalizeGeneratedMap(raw, input));
     const coverLookupTimeoutMs = capStageTimeout(deadline, COVER_LOOKUP_TIMEOUT_MS, 1000);
