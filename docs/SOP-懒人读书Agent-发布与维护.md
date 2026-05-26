@@ -99,6 +99,14 @@ gh repo create amoxuanque/lazymap-reading-agent --public --source=. --remote=ori
 - API Key
 - 上传全文正文
 - prompt 原文
+4. 健康检查优先看两个接口：
+- `/api/health`：兼容性健康入口，始终返回服务摘要与依赖诊断
+- `/api/ready`：正式服务就绪判断，`200` 表示 formal generation path 可用，`503` 表示仍处于 `unconfigured`
+5. 当前状态解释：
+- `live`：进程正常、接口可响应
+- `ready`：SiliconFlow 正式生成链路配置齐全
+- `degraded`：正式生成可用，但 Tavily 或书目元数据依赖缺失
+- `unconfigured`：缺关键正式生成配置，只能 fallback 或无法正式生成
 
 ## 回归清单
 

@@ -58,7 +58,51 @@ async function getFreePort() {
   });
 }
 
-async function waitForServer(url, timeoutMs = 10000) {
+async function startServer(overrides = {}) {
+  const port = await getFreePort();
+  const logs = { value: '' };
+  const processHandle = spawn('node', ['server.js'], {
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      NODE_ENV: 'test',
+      ALLOW_PROTOTYPE_FALLBACK: 'true',
+      SILICONFLOW_API_KEY: '',
+      GEMINI_API_KEY: '',
+      TAVILY_API_KEY: '',
+      GOOGLE_BOOKS_BASE_URL: `http://127.0.0.1:${stubPort}/google`,
+      OPEN_LIBRARY_BASE_URL: `http://127.0.0.1:${stubPort}/openlibrary`,
+      ...overrides,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  processHandle.stdout.on('data', (chunk) => {
+    logs.value += chunk.toString();
+  });
+  processHandle.stderr.on('data', (chunk) => {
+    logs.value += chunk.toString();
+  });
+
+  await waitForServer(`http://127.0.0.1:${port}/api/health`, 10000, () => logs.value);
+
+  return { port, processHandle, logs };
+}
+
+async function stopServer(handle) {
+  if (!handle || !handle.processHandle || handle.processHandle.killed) {
+    return;
+  }
+
+  handle.processHandle.kill('SIGTERM');
+  await new Promise((resolve) => {
+    handle.processHandle.once('exit', () => resolve());
+    setTimeout(() => resolve(), 2000);
+  });
+}
+
+async function waitForServer(url, timeoutMs = 10000, getLogs = () => serverLogs) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
 
@@ -75,7 +119,7 @@ async function waitForServer(url, timeoutMs = 10000) {
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
-  throw new Error(`Server did not become ready in time. Last error: ${String(lastError)}\n${serverLogs}`);
+  throw new Error(`Server did not become ready in time. Last error: ${String(lastError)}\n${getLogs()}`);
 }
 
 function createStubServer() {
@@ -178,6 +222,52 @@ test('/api/health returns release-critical config fields', async () => {
   assert.equal(payload.config.allowPrototypeFallback, true);
   assert.equal(payload.config.tavilyConfigured, false);
   assert.equal(typeof payload.model, 'string');
+  assert.equal(payload.live, true);
+  assert.equal(payload.ready, false);
+  assert.equal(payload.status, 'unconfigured');
+  assert.equal(payload.dependencies.siliconflow.configured, false);
+  assert.equal(Array.isArray(payload.diagnostics.issues), true);
+});
+
+test('/api/ready reports unconfigured when formal generation is unavailable', async () => {
+  const response = await fetch(`http://127.0.0.1:${appPort}/api/ready`);
+  const payload = await getJson(response);
+
+  assert.equal(response.status, 503);
+  assert.ok(response.headers.get('x-request-id'));
+  assert.equal(payload.ok, false);
+  assert.equal(payload.live, true);
+  assert.equal(payload.ready, false);
+  assert.equal(payload.status, 'unconfigured');
+  assert.equal(payload.provider, 'prototype-fallback');
+  assert.equal(payload.config.allowPrototypeFallback, true);
+  assert.equal(payload.dependencies.prototypeFallback.enabled, true);
+});
+
+test('/api/ready reports degraded but ready when formal generation is configured and optional deps are missing', async () => {
+  const degradedServer = await startServer({
+    SILICONFLOW_API_KEY: 'YOUR_SILICONFLOW_API_KEY',
+    ALLOW_PROTOTYPE_FALLBACK: 'false',
+    TAVILY_API_KEY: '',
+  });
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${degradedServer.port}/api/ready`);
+    const payload = await getJson(response);
+
+    assert.equal(response.status, 200);
+    assert.ok(response.headers.get('x-request-id'));
+    assert.equal(payload.ok, true);
+    assert.equal(payload.live, true);
+    assert.equal(payload.ready, true);
+    assert.equal(payload.status, 'degraded');
+    assert.equal(payload.provider, 'siliconflow');
+    assert.equal(payload.dependencies.siliconflow.configured, true);
+    assert.equal(payload.dependencies.tavily.configured, false);
+    assert.ok(payload.diagnostics.degradedReasons.includes('tavily_unconfigured'));
+  } finally {
+    await stopServer(degradedServer);
+  }
 });
 
 test('/api/search-books handles empty and unusual queries without crashing', async () => {

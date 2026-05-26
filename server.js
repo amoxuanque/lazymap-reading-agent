@@ -636,6 +636,193 @@ function buildConfigStatus() {
   };
 }
 
+function hasConfiguredValue(value) {
+  return Boolean(String(value || '').trim());
+}
+
+function isValidHttpUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function summarizeUrl(value) {
+  try {
+    return new URL(String(value || '')).host || null;
+  } catch {
+    return null;
+  }
+}
+
+function getConfiguredProvider() {
+  const config = buildConfigStatus();
+  return config.siliconflowConfigured
+    ? 'siliconflow'
+    : (config.allowPrototypeFallback ? 'prototype-fallback' : 'unconfigured');
+}
+
+function buildServiceDiagnostics() {
+  const config = buildConfigStatus();
+  const siliconflowBaseUrlConfigured = isValidHttpUrl(SILICONFLOW_BASE_URL);
+  const googleBooksConfigured = isValidHttpUrl(GOOGLE_BOOKS_BASE_URL);
+  const openLibraryConfigured = isValidHttpUrl(OPEN_LIBRARY_BASE_URL);
+  const modelConfigured = hasConfiguredValue(SILICONFLOW_MODEL);
+  const compactModelConfigured = hasConfiguredValue(SILICONFLOW_COMPACT_MODEL);
+  const polishModelConfigured = hasConfiguredValue(SILICONFLOW_POLISH_MODEL);
+  const formalGenerationReady =
+    config.siliconflowConfigured &&
+    siliconflowBaseUrlConfigured &&
+    modelConfigured &&
+    compactModelConfigured &&
+    polishModelConfigured;
+
+  const degradedReasons = [];
+  const issues = [];
+  let status = 'ready';
+
+  if (!formalGenerationReady) {
+    status = 'unconfigured';
+    issues.push('formal_generation_unavailable');
+    if (!config.siliconflowConfigured) {
+      issues.push('siliconflow_key_missing');
+    }
+    if (!siliconflowBaseUrlConfigured) {
+      issues.push('siliconflow_base_url_invalid');
+    }
+    if (!modelConfigured || !compactModelConfigured || !polishModelConfigured) {
+      issues.push('siliconflow_model_config_incomplete');
+    }
+  } else {
+    if (!config.tavilyConfigured) {
+      degradedReasons.push('tavily_unconfigured');
+    }
+    if (!googleBooksConfigured) {
+      degradedReasons.push('google_books_base_url_invalid');
+    }
+    if (!openLibraryConfigured) {
+      degradedReasons.push('open_library_base_url_invalid');
+    }
+    if (degradedReasons.length > 0) {
+      status = 'degraded';
+    }
+  }
+
+  const provider = getConfiguredProvider();
+
+  return {
+    live: true,
+    ready: formalGenerationReady,
+    status,
+    provider,
+    dependencies: {
+      siliconflow: {
+        configured: config.siliconflowConfigured,
+        formalGenerationReady,
+        baseUrlConfigured: siliconflowBaseUrlConfigured,
+        baseUrlHost: summarizeUrl(SILICONFLOW_BASE_URL),
+        modelConfigured,
+        compactModelConfigured,
+        polishModelConfigured,
+      },
+      tavily: {
+        configured: config.tavilyConfigured,
+        requiredForFormalGeneration: false,
+        impact: 'grounding',
+      },
+      googleBooks: {
+        configured: googleBooksConfigured,
+        baseUrlHost: summarizeUrl(GOOGLE_BOOKS_BASE_URL),
+        impact: 'search_and_cover_metadata',
+      },
+      openLibrary: {
+        configured: openLibraryConfigured,
+        baseUrlHost: summarizeUrl(OPEN_LIBRARY_BASE_URL),
+        impact: 'search_metadata',
+      },
+      prototypeFallback: {
+        enabled: config.allowPrototypeFallback,
+      },
+    },
+    checks: {
+      live: {
+        ok: true,
+        state: 'live',
+        summary: 'Express process is serving requests.',
+      },
+      ready: {
+        ok: formalGenerationReady,
+        state: formalGenerationReady ? 'ready' : 'unconfigured',
+        summary: formalGenerationReady
+          ? 'SiliconFlow formal generation path is configured.'
+          : 'Formal generation path is not fully configured.',
+      },
+      tavily: {
+        ok: config.tavilyConfigured,
+        state: config.tavilyConfigured ? 'ready' : 'degraded',
+        summary: config.tavilyConfigured
+          ? 'Grounding enhancement is configured.'
+          : 'Grounding enhancement is unavailable; generation can still run without it.',
+      },
+      searchMetadata: {
+        ok: googleBooksConfigured && openLibraryConfigured,
+        state: googleBooksConfigured && openLibraryConfigured ? 'ready' : 'degraded',
+        summary: googleBooksConfigured && openLibraryConfigured
+          ? 'External catalog metadata sources are configured.'
+          : 'One or more catalog metadata sources are unavailable or invalid.',
+      },
+    },
+    diagnostics: {
+      nodeEnv: NODE_ENV,
+      port: PORT,
+      provider,
+      model: SILICONFLOW_MODEL,
+      compactModel: SILICONFLOW_COMPACT_MODEL,
+      allowPrototypeFallback: config.allowPrototypeFallback,
+      degradedReasons,
+      issues,
+    },
+  };
+}
+
+function buildHealthPayload() {
+  const config = buildConfigStatus();
+  const diagnostics = buildServiceDiagnostics();
+  return {
+    ok: true,
+    live: diagnostics.live,
+    ready: diagnostics.ready,
+    status: diagnostics.status,
+    provider: diagnostics.provider,
+    model: SILICONFLOW_MODEL,
+    tavily: config.tavilyConfigured,
+    config,
+    checks: diagnostics.checks,
+    dependencies: diagnostics.dependencies,
+    diagnostics: diagnostics.diagnostics,
+  };
+}
+
+function buildReadyPayload() {
+  const config = buildConfigStatus();
+  const diagnostics = buildServiceDiagnostics();
+  return {
+    ok: diagnostics.ready,
+    live: diagnostics.live,
+    ready: diagnostics.ready,
+    status: diagnostics.status,
+    provider: diagnostics.provider,
+    model: SILICONFLOW_MODEL,
+    tavily: config.tavilyConfigured,
+    config,
+    checks: diagnostics.checks,
+    dependencies: diagnostics.dependencies,
+    diagnostics: diagnostics.diagnostics,
+  };
+}
+
 function isUploadSource(input) {
   return input?.sourceKind === 'upload' && trimText(input?.content).length > 0;
 }
@@ -3577,18 +3764,25 @@ async function buildReadingMapBySections(input, groundingContext, analysisBrief,
 }
 
 app.get('/api/health', (_request, response) => {
-  const config = buildConfigStatus();
+  const payload = buildHealthPayload();
   appendRequestLogMeta({
-    provider: config.siliconflowConfigured ? 'siliconflow' : (config.allowPrototypeFallback ? 'prototype-fallback' : 'unconfigured'),
-    tavilyConfigured: config.tavilyConfigured,
+    provider: payload.provider,
+    tavilyConfigured: payload.config.tavilyConfigured,
+    serviceStatus: payload.status,
+    ready: payload.ready,
   });
-  response.json({
-    ok: true,
-    provider: config.siliconflowConfigured ? 'siliconflow' : (config.allowPrototypeFallback ? 'prototype-fallback' : 'unconfigured'),
-    model: SILICONFLOW_MODEL,
-    tavily: config.tavilyConfigured,
-    config,
+  response.json(payload);
+});
+
+app.get('/api/ready', (_request, response) => {
+  const payload = buildReadyPayload();
+  appendRequestLogMeta({
+    provider: payload.provider,
+    tavilyConfigured: payload.config.tavilyConfigured,
+    serviceStatus: payload.status,
+    ready: payload.ready,
   });
+  response.status(payload.ready ? 200 : 503).json(payload);
 });
 
 app.get('/api/search-books', async (request, response) => {
