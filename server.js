@@ -1,6 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -43,10 +44,205 @@ const ALLOW_PROTOTYPE_FALLBACK = process.env.ALLOW_PROTOTYPE_FALLBACK
   ? ['1', 'true', 'yes', 'on'].includes(String(process.env.ALLOW_PROTOTYPE_FALLBACK).toLowerCase())
   : NODE_ENV !== 'production';
 
-app.use(express.json({ limit: '2mb' }));
-
 const fallbackCover = 'https://images.unsplash.com/photo-1512820790803-83ca734da794?q=80&w=800&auto=format&fit=crop';
 const shareStore = new Map();
+const requestContextStorage = new AsyncLocalStorage();
+const REQUEST_ID_HEADER = 'X-Request-Id';
+const LOG_REDACTED_KEYS = new Set(['content', 'prompt', 'rawContent', 'raw_content']);
+
+function buildRequestId() {
+  return randomUUID().split('-')[0];
+}
+
+function redactSensitiveText(value) {
+  return String(value || '')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[redacted-secret]')
+    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[redacted-secret]')
+    .replace(/(Bearer\s+)[A-Za-z0-9._-]{12,}/gi, '$1[redacted-secret]')
+    .replace(/\b(?:SILICONFLOW_API_KEY|TAVILY_API_KEY|GEMINI_API_KEY)\b\s*[:=]\s*["']?[^"'\s]+/gi, '[redacted-secret]');
+}
+
+function sanitizeLogValue(key, value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (LOG_REDACTED_KEYS.has(key) || /content|prompt/i.test(key)) {
+    return `[redacted:${String(value).length}]`;
+  }
+
+  if (typeof value === 'string') {
+    const cleaned = redactSensitiveText(value);
+    return cleaned.length > 240 ? `${cleaned.slice(0, 237)}...` : cleaned;
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 8).map((item) => sanitizeLogValue('', item));
+  }
+
+  if (typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, 12)
+        .map(([entryKey, entryValue]) => [entryKey, sanitizeLogValue(entryKey, entryValue)]),
+    );
+  }
+
+  return String(value);
+}
+
+function sanitizeLogMeta(meta = {}) {
+  return Object.fromEntries(
+    Object.entries(meta).map(([key, value]) => [key, sanitizeLogValue(key, value)]),
+  );
+}
+
+function summarizeError(error) {
+  if (error instanceof Error) {
+    return sanitizeLogMeta({
+      name: error.name,
+      message: error.message,
+    });
+  }
+
+  return sanitizeLogMeta({
+    message: String(error || 'Unknown error'),
+  });
+}
+
+function classifyError(error, options = {}) {
+  const message = error instanceof Error ? error.message : String(error || '');
+
+  if (options.statusCode >= 400 && options.statusCode < 500) {
+    return 'user_input_error';
+  }
+
+  if (error instanceof SyntaxError) {
+    return 'parse_error';
+  }
+
+  if (/(timeout|aborted|insufficient remaining budget)/i.test(message)) {
+    return 'timeout_error';
+  }
+
+  if (options.source === 'siliconflow') {
+    return 'model_error';
+  }
+
+  if (['google_books', 'open_library', 'tavily', 'cover_lookup'].includes(options.source || '')) {
+    return 'external_dependency_error';
+  }
+
+  return 'internal_error';
+}
+
+function getRequestContext() {
+  return requestContextStorage.getStore() || null;
+}
+
+function appendRequestLogMeta(meta = {}) {
+  const context = getRequestContext();
+  if (!context) {
+    return;
+  }
+
+  const sanitized = sanitizeLogMeta(meta);
+  Object.entries(sanitized).forEach(([key, value]) => {
+    if (key === 'degradedDependencies' && Array.isArray(value)) {
+      const merged = new Set([...(context.meta.degradedDependencies || []), ...value]);
+      context.meta.degradedDependencies = Array.from(merged);
+      return;
+    }
+
+    context.meta[key] = value;
+  });
+}
+
+function addDegradedDependency(dependency) {
+  const context = getRequestContext();
+  if (!context || !dependency) {
+    return;
+  }
+
+  const nextDependencies = new Set([...(context.meta.degradedDependencies || []), dependency]);
+  context.meta.degraded = true;
+  context.meta.degradedDependencies = Array.from(nextDependencies);
+}
+
+function getLogMethod(level) {
+  return level === 'error' ? console.error : (level === 'warn' ? console.warn : console.log);
+}
+
+function logEvent(level, event, meta = {}) {
+  const context = getRequestContext();
+  const payload = sanitizeLogMeta({
+    event,
+    requestId: context?.requestId,
+    ...meta,
+  });
+  getLogMethod(level)(`[api] ${JSON.stringify(payload)}`);
+}
+
+function getRequestRouteLabel(request) {
+  const routePath = request.route?.path;
+  if (routePath) {
+    return `${request.baseUrl || ''}${routePath}`;
+  }
+  return request.path || String(request.originalUrl || '').split('?')[0];
+}
+
+function summarizeGenerateInput(input) {
+  const sourceKind = input?.sourceKind === 'upload' ? 'upload' : 'catalog';
+  return {
+    sourceKind,
+    hasAuthor: Boolean(String(input?.author || '').trim()),
+    contentLength: sourceKind === 'upload' ? String(input?.content || '').length : 0,
+  };
+}
+
+app.use(express.json({ limit: '2mb' }));
+app.use((request, response, next) => {
+  const requestId = buildRequestId();
+  const startedAt = Date.now();
+  const context = {
+    requestId,
+    meta: {},
+  };
+
+  response.setHeader(REQUEST_ID_HEADER, requestId);
+  response.on('finish', () => {
+    const requestMeta = {
+      requestId,
+      method: request.method,
+      route: getRequestRouteLabel(request),
+      status: response.statusCode,
+      durationMs: Date.now() - startedAt,
+      ...context.meta,
+    };
+
+    if (!requestMeta.outcome) {
+      requestMeta.outcome = response.statusCode >= 400 ? 'error' : 'success';
+    }
+    if (!requestMeta.errorType && response.statusCode >= 400 && response.statusCode < 500) {
+      requestMeta.errorType = 'user_input_error';
+    }
+    if (!requestMeta.errorType && response.statusCode >= 500) {
+      requestMeta.errorType = 'internal_error';
+    }
+
+    const level = response.statusCode >= 500
+      ? 'error'
+      : ((requestMeta.degraded || requestMeta.errorType || response.statusCode >= 400) ? 'warn' : 'log');
+
+    logEvent(level, 'request_completed', requestMeta);
+  });
+
+  requestContextStorage.run(context, next);
+});
 
 const libraryMaps = [
   {
@@ -1394,7 +1590,10 @@ async function polishMapQuality(input, groundingContext, analysisBrief, currentM
       routes: Array.isArray(polished?.routes) && polished.routes.length >= 3 ? polished.routes : currentMap.routes,
     }, input);
   } catch (error) {
-    console.warn('Quality polish failed, keeping current map.', error);
+    logEvent('warn', 'quality_polish_failed', {
+      errorType: classifyError(error, { source: 'siliconflow' }),
+      error: summarizeError(error),
+    });
     return removeOffTopicItems(currentMap, input);
   }
 }
@@ -1628,7 +1827,10 @@ async function enrichEditorialDepth(input, groundingContext, analysisBrief, curr
         overview: polishedOverview?.overview?.cards?.length === 4 ? polishedOverview.overview : nextMap.overview,
       };
     } catch (error) {
-      console.warn('Overview polish failed, keeping existing overview.', error);
+      logEvent('warn', 'overview_polish_failed', {
+        errorType: classifyError(error, { source: 'siliconflow' }),
+        error: summarizeError(error),
+      });
     }
   }
 
@@ -1648,7 +1850,10 @@ async function enrichEditorialDepth(input, groundingContext, analysisBrief, curr
         };
       }
     } catch (error) {
-      console.warn('Methods booster failed, using structural fallback.', error);
+      logEvent('warn', 'methods_booster_failed', {
+        errorType: classifyError(error, { source: 'siliconflow' }),
+        error: summarizeError(error),
+      });
       nextMap.methods = extendMethodsFallback(nextMap);
     }
   }
@@ -1666,7 +1871,10 @@ async function enrichEditorialDepth(input, groundingContext, analysisBrief, curr
         nextMap.quotes = boostedQuotes.quotes.slice(0, 8);
       }
     } catch (error) {
-      console.warn('Quotes booster failed, keeping existing quotes.', error);
+      logEvent('warn', 'quotes_booster_failed', {
+        errorType: classifyError(error, { source: 'siliconflow' }),
+        error: summarizeError(error),
+      });
     }
   }
 
@@ -1682,7 +1890,10 @@ async function enrichEditorialDepth(input, groundingContext, analysisBrief, curr
         nextMap.parts = polishedParts.parts;
       }
     } catch (error) {
-      console.warn('Part polish failed, keeping existing parts.', error);
+      logEvent('warn', 'part_polish_failed', {
+        errorType: classifyError(error, { source: 'siliconflow' }),
+        error: summarizeError(error),
+      });
     }
   }
 
@@ -1702,7 +1913,10 @@ async function enrichEditorialDepth(input, groundingContext, analysisBrief, curr
         };
       }
     } catch (error) {
-      console.warn('Weak methods polish failed, keeping existing methods.', error);
+      logEvent('warn', 'weak_methods_polish_failed', {
+        errorType: classifyError(error, { source: 'siliconflow' }),
+        error: summarizeError(error),
+      });
     }
   }
 
@@ -1747,7 +1961,10 @@ async function enrichSparseMap(input, groundingContext, analysisBrief, currentMa
       routes: Array.isArray(enriched?.routes) && enriched.routes.length ? enriched.routes : currentMap.routes,
     };
   } catch (error) {
-    console.warn('Sparse map enrichment failed, keeping base map.', error);
+    logEvent('warn', 'sparse_map_enrichment_failed', {
+      errorType: classifyError(error, { source: 'siliconflow' }),
+      error: summarizeError(error),
+    });
     return currentMap;
   }
 }
@@ -2056,7 +2273,14 @@ ${JSON.stringify(map).slice(0, 40000)}
     });
     return deepCleanChineseText(translated);
   } catch (error) {
-    console.warn('Map translation failed, keeping original map.', error);
+    const errorType = classifyError(error, { source: 'siliconflow' });
+    addDegradedDependency('siliconflow');
+    logEvent('warn', 'translate_map_fallback', {
+      dependency: 'siliconflow',
+      degraded: true,
+      errorType,
+      error: summarizeError(error),
+    });
     return map;
   }
 }
@@ -2542,7 +2766,14 @@ async function resolveBookCover(title, author, currentCover, timeoutMs = GOOGLE_
     const candidate = buildGoogleCandidates(title, results)[0];
     return candidate?.cover || safeCurrentCover || fallbackCover;
   } catch (error) {
-    console.warn('Cover lookup failed, keeping fallback cover.', error);
+    const errorType = classifyError(error, { source: 'google_books' });
+    addDegradedDependency('google_books');
+    logEvent('warn', 'cover_lookup_failed', {
+      dependency: 'google_books',
+      degraded: true,
+      errorType,
+      error: summarizeError(error),
+    });
     return safeCurrentCover || fallbackCover;
   }
 }
@@ -2555,9 +2786,42 @@ async function buildGroundingContext(input) {
 
   try {
     const [coreResults, structureResults, quoteResults] = await Promise.all([
-      searchTavily(`${query} 这本书讲什么 核心观点 主要内容`, { searchDepth: 'advanced', maxResults: 3 }).catch(() => []),
-      searchTavily(`${query} 目录 章节 框架`, { searchDepth: 'advanced', maxResults: 3 }).catch(() => []),
-      searchTavily(`${query} 书摘 金句 摘录 摘抄`, { searchDepth: 'advanced', maxResults: 3, includeRawContent: true }).catch(() => []),
+      searchTavily(`${query} 这本书讲什么 核心观点 主要内容`, { searchDepth: 'advanced', maxResults: 3 }).catch((error) => {
+        const errorType = classifyError(error, { source: 'tavily' });
+        addDegradedDependency('tavily');
+        logEvent('warn', 'grounding_source_failed', {
+          dependency: 'tavily',
+          stage: 'core',
+          degraded: true,
+          errorType,
+          error: summarizeError(error),
+        });
+        return [];
+      }),
+      searchTavily(`${query} 目录 章节 框架`, { searchDepth: 'advanced', maxResults: 3 }).catch((error) => {
+        const errorType = classifyError(error, { source: 'tavily' });
+        addDegradedDependency('tavily');
+        logEvent('warn', 'grounding_source_failed', {
+          dependency: 'tavily',
+          stage: 'structure',
+          degraded: true,
+          errorType,
+          error: summarizeError(error),
+        });
+        return [];
+      }),
+      searchTavily(`${query} 书摘 金句 摘录 摘抄`, { searchDepth: 'advanced', maxResults: 3, includeRawContent: true }).catch((error) => {
+        const errorType = classifyError(error, { source: 'tavily' });
+        addDegradedDependency('tavily');
+        logEvent('warn', 'grounding_source_failed', {
+          dependency: 'tavily',
+          stage: 'quotes',
+          degraded: true,
+          errorType,
+          error: summarizeError(error),
+        });
+        return [];
+      }),
     ]);
     const results = mergeTavilyResults([coreResults, structureResults, quoteResults])
       .filter((item) => isRelevantGroundingResult(item, query));
@@ -2566,7 +2830,14 @@ async function buildGroundingContext(input) {
     }
     return buildGroundingDossier(results);
   } catch (error) {
-    console.warn('Tavily grounding search failed.', error);
+    const errorType = classifyError(error, { source: 'tavily' });
+    addDegradedDependency('tavily');
+    logEvent('warn', 'grounding_search_failed', {
+      dependency: 'tavily',
+      degraded: true,
+      errorType,
+      error: summarizeError(error),
+    });
     return '';
   }
 }
@@ -2586,7 +2857,14 @@ async function buildCompactGroundingContext(input, timeoutMs = COMPACT_GROUNDING
     const filtered = results.filter((item) => isRelevantGroundingResult(item, query));
     return filtered.length ? buildCompactGroundingDossier(filtered) : '';
   } catch (error) {
-    console.warn('Compact Tavily grounding failed, continuing without grounding.', error);
+    const errorType = classifyError(error, { source: 'tavily' });
+    addDegradedDependency('tavily');
+    logEvent('warn', 'compact_grounding_failed', {
+      dependency: 'tavily',
+      degraded: true,
+      errorType,
+      error: summarizeError(error),
+    });
     return '';
   }
 }
@@ -3265,7 +3543,11 @@ async function buildReadingMapBySections(input, groundingContext, analysisBrief,
   for (const section of sections) {
     const timeoutMs = capStageTimeout(deadline, sectionTimeoutMs);
     if (!timeoutMs) {
-      console.warn(`Skipping map section generation for ${section.key}: insufficient remaining budget.`);
+      logEvent('warn', 'map_section_skipped', {
+        section: section.key,
+        errorType: 'timeout_error',
+        reason: 'insufficient_remaining_budget',
+      });
       break;
     }
 
@@ -3279,7 +3561,11 @@ async function buildReadingMapBySections(input, groundingContext, analysisBrief,
       });
       Object.assign(merged, partial);
     } catch (error) {
-      console.warn(`Map section generation failed for ${section.key}.`, error);
+      logEvent('warn', 'map_section_generation_failed', {
+        section: section.key,
+        errorType: classifyError(error, { source: 'siliconflow' }),
+        error: summarizeError(error),
+      });
     }
   }
 
@@ -3292,6 +3578,10 @@ async function buildReadingMapBySections(input, groundingContext, analysisBrief,
 
 app.get('/api/health', (_request, response) => {
   const config = buildConfigStatus();
+  appendRequestLogMeta({
+    provider: config.siliconflowConfigured ? 'siliconflow' : (config.allowPrototypeFallback ? 'prototype-fallback' : 'unconfigured'),
+    tavilyConfigured: config.tavilyConfigured,
+  });
   response.json({
     ok: true,
     provider: config.siliconflowConfigured ? 'siliconflow' : (config.allowPrototypeFallback ? 'prototype-fallback' : 'unconfigured'),
@@ -3303,8 +3593,13 @@ app.get('/api/health', (_request, response) => {
 
 app.get('/api/search-books', async (request, response) => {
   const query = String(request.query.q || '').trim();
+  appendRequestLogMeta({
+    queryPresent: Boolean(query),
+    queryLength: query.length,
+  });
 
   if (!query) {
+    appendRequestLogMeta({ resultsCount: libraryMaps.length });
     response.json({ results: libraryMaps });
     return;
   }
@@ -3312,17 +3607,58 @@ app.get('/api/search-books', async (request, response) => {
   try {
     const localMatches = searchLocalLibrary(query);
     const [googleResults, openLibraryResults] = await Promise.all([
-      searchGoogleBooks(query, 5).catch(() => []),
-      searchOpenLibrary(query, 5).catch(() => []),
+      searchGoogleBooks(query, 5).catch((error) => {
+        const errorType = classifyError(error, { source: 'google_books' });
+        addDegradedDependency('google_books');
+        logEvent('warn', 'search_source_failed', {
+          dependency: 'google_books',
+          degraded: true,
+          errorType,
+          queryLength: query.length,
+          error: summarizeError(error),
+        });
+        return [];
+      }),
+      searchOpenLibrary(query, 5).catch((error) => {
+        const errorType = classifyError(error, { source: 'open_library' });
+        addDegradedDependency('open_library');
+        logEvent('warn', 'search_source_failed', {
+          dependency: 'open_library',
+          degraded: true,
+          errorType,
+          queryLength: query.length,
+          error: summarizeError(error),
+        });
+        return [];
+      }),
     ]);
     const googleCandidates = buildGoogleCandidates(query, googleResults);
     const openLibraryCandidates = buildOpenLibraryCandidates(query, openLibraryResults);
     const results = mergeSearchCandidates(query, localMatches, [...googleCandidates, ...openLibraryCandidates]);
 
+    appendRequestLogMeta({
+      resultsCount: results.length,
+      localMatches: localMatches.length,
+    });
     response.json({ results });
   } catch (error) {
-    console.error('Search pipeline failed, falling back to local library only.', error);
-    response.json({ results: searchLocalLibrary(query) });
+    const fallbackResults = searchLocalLibrary(query);
+    const errorType = classifyError(error);
+    appendRequestLogMeta({
+      degraded: true,
+      outcome: 'fallback_used',
+      errorType: 'fallback_used',
+      fallbackReason: 'search_pipeline_failed',
+      fallbackReasonType: errorType,
+      resultsCount: fallbackResults.length,
+    });
+    logEvent('warn', 'search_pipeline_fallback', {
+      degraded: true,
+      errorType,
+      queryLength: query.length,
+      error: summarizeError(error),
+    });
+    response.json({ results: fallbackResults });
   }
 });
 
@@ -3331,6 +3667,10 @@ app.post('/api/share-map', (request, response) => {
 
   const map = request.body?.map;
   if (!map || typeof map !== 'object' || !map.id || !map.title) {
+    appendRequestLogMeta({
+      outcome: 'error',
+      errorType: 'user_input_error',
+    });
     response.status(400).json({ error: '缺少可分享的地图数据。' });
     return;
   }
@@ -3346,6 +3686,9 @@ app.post('/api/share-map', (request, response) => {
   });
   cleanupShareStore(now);
 
+  appendRequestLogMeta({
+    shareCreated: true,
+  });
   response.json({
     shareId,
     expiresAt: new Date(expiresAt).toISOString(),
@@ -3356,9 +3699,16 @@ app.get('/api/share-map/:id', (request, response) => {
   cleanupShareStore();
 
   const shareId = String(request.params.id || '').trim();
+  appendRequestLogMeta({
+    shareIdPresent: Boolean(shareId),
+  });
   const entry = shareStore.get(shareId);
 
   if (!entry) {
+    appendRequestLogMeta({
+      outcome: 'error',
+      errorType: 'user_input_error',
+    });
     response.status(404).json({ error: '分享已失效或不存在' });
     return;
   }
@@ -3372,17 +3722,51 @@ app.get('/api/share-map/:id', (request, response) => {
 
 app.post('/api/generate-map', async (request, response) => {
   const input = request.body || {};
+  const generateMeta = summarizeGenerateInput(input);
+  appendRequestLogMeta(generateMeta);
+  logEvent('log', 'generate_map_started', generateMeta);
+
   if (!input.title) {
+    appendRequestLogMeta({
+      outcome: 'error',
+      errorType: 'user_input_error',
+    });
     response.status(400).json({ error: '缺少必填字段：title。请先提供书名。' });
     return;
   }
 
   if (!SILICONFLOW_API_KEY) {
     if (!ALLOW_PROTOTYPE_FALLBACK) {
+      appendRequestLogMeta({
+        provider: 'unconfigured',
+        outcome: 'error',
+        errorType: 'internal_error',
+      });
+      logEvent('error', 'generate_map_unavailable', {
+        reason: 'missing_siliconflow_api_key',
+        errorType: 'internal_error',
+        ...generateMeta,
+      });
       sendGenerationUnavailable(response, '当前环境缺少 SILICONFLOW_API_KEY，暂时无法使用正式生成链路。');
       return;
     }
     const map = buildPrototypeMap(input);
+    appendRequestLogMeta({
+      provider: 'prototype-fallback',
+      mode: 'prototype-fallback',
+      degraded: true,
+      outcome: 'fallback_used',
+      errorType: 'fallback_used',
+      fallbackReason: 'missing_siliconflow_api_key',
+    });
+    logEvent('warn', 'generate_map_fallback', {
+      provider: 'prototype-fallback',
+      mode: 'prototype-fallback',
+      degraded: true,
+      errorType: 'fallback_used',
+      fallbackReason: 'missing_siliconflow_api_key',
+      ...generateMeta,
+    });
     response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
     return;
   }
@@ -3417,9 +3801,19 @@ app.post('/api/generate-map', async (request, response) => {
     map.cover = coverLookupTimeoutMs
       ? await resolveBookCover(map.title, map.author, map.cover, coverLookupTimeoutMs)
       : (map.cover || fallbackCover);
+    appendRequestLogMeta({
+      provider: 'siliconflow',
+      mode: map.sourceMeta.mode,
+    });
     response.json({ map, provider: 'siliconflow', mode: map.sourceMeta.mode });
   } catch (error) {
-    console.error('SiliconFlow generation failed, falling back.', error);
+    const fallbackReasonType = classifyError(error, { source: 'siliconflow' });
+    logEvent('warn', 'generate_map_failed', {
+      provider: 'siliconflow',
+      errorType: fallbackReasonType,
+      error: summarizeError(error),
+      ...generateMeta,
+    });
     const canUseCompactFallback =
       error instanceof SyntaxError ||
       (error instanceof Error && /(timeout|aborted)/i.test(error.message));
@@ -3429,10 +3823,24 @@ app.post('/api/generate-map', async (request, response) => {
       map.cover = coverLookupTimeoutMs
         ? await resolveBookCover(map.title, map.author, map.cover, coverLookupTimeoutMs)
         : (map.cover || fallbackCover);
+      appendRequestLogMeta({
+        provider: 'prototype-fallback',
+        mode: 'prototype-fallback',
+        degraded: true,
+        outcome: 'fallback_used',
+        errorType: 'fallback_used',
+        fallbackReason: 'compact_generation_failed',
+        fallbackReasonType,
+      });
       response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
       return;
     }
     if (!ALLOW_PROTOTYPE_FALLBACK) {
+      appendRequestLogMeta({
+        provider: 'siliconflow',
+        outcome: 'error',
+        errorType: fallbackReasonType,
+      });
       sendGenerationUnavailable(
         response,
         error instanceof Error ? error.message : '生成失败，暂时没有产出可用的阅读地图。',
@@ -3441,6 +3849,15 @@ app.post('/api/generate-map', async (request, response) => {
     }
     const map = buildPrototypeMap(input);
     map.cover = await resolveBookCover(map.title, map.author, map.cover);
+    appendRequestLogMeta({
+      provider: 'prototype-fallback',
+      mode: 'prototype-fallback',
+      degraded: true,
+      outcome: 'fallback_used',
+      errorType: 'fallback_used',
+      fallbackReason: 'generation_failed',
+      fallbackReasonType,
+    });
     response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
   }
 });
@@ -3448,6 +3865,10 @@ app.post('/api/generate-map', async (request, response) => {
 app.post('/api/translate-map', async (request, response) => {
   const inputMap = request.body?.map;
   if (!inputMap) {
+    appendRequestLogMeta({
+      outcome: 'error',
+      errorType: 'user_input_error',
+    });
     response.status(400).json({ error: 'Missing required field: map' });
     return;
   }
@@ -3456,7 +3877,16 @@ app.post('/api/translate-map', async (request, response) => {
     const map = await translateMapToEnglish(inputMap);
     response.json({ map });
   } catch (error) {
-    console.error('Map translation failed.', error);
+    const errorType = classifyError(error, { source: 'siliconflow' });
+    appendRequestLogMeta({
+      outcome: 'error',
+      errorType,
+      provider: 'siliconflow',
+    });
+    logEvent('error', 'translate_map_failed', {
+      errorType,
+      error: summarizeError(error),
+    });
     response.status(500).json({ error: 'Map translation failed.' });
   }
 });
@@ -3474,5 +3904,8 @@ if (existsSync(distDir)) {
 }
 
 app.listen(PORT, () => {
-  console.log(`Lanren Read API listening on http://localhost:${PORT}`);
+  logEvent('log', 'server_started', {
+    port: PORT,
+    nodeEnv: NODE_ENV,
+  });
 });

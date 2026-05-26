@@ -86,6 +86,20 @@ gh repo create amoxuanque/lazymap-reading-agent --public --source=. --remote=ori
 - 不向用户暴露内部 API 成本、利润率、模型切换逻辑
 - 积分提示只保留动作级表达
 
+## 诊断口径
+
+1. 后端每个请求都会返回 `X-Request-Id` 响应头。
+2. 排查问题时，优先按 `requestId` 对照终端结构化日志，看：
+- `route / method / status / durationMs`
+- `errorType`
+- 是否 `degraded`
+- 是否 `fallback_used`
+- `provider / mode / sourceKind`
+3. 日志默认不记录：
+- API Key
+- 上传全文正文
+- prompt 原文
+
 ## 回归清单
 
 每次发布前先跑自动闸门：

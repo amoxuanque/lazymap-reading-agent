@@ -32,6 +32,10 @@ function appendLog(chunk) {
   serverLogs += chunk.toString();
 }
 
+async function waitForLogsToFlush() {
+  await new Promise((resolve) => setTimeout(resolve, 60));
+}
+
 async function getFreePort() {
   return await new Promise((resolve, reject) => {
     const server = http.createServer();
@@ -167,6 +171,7 @@ test('/api/health returns release-critical config fields', async () => {
   const payload = await getJson(response);
 
   assert.equal(response.status, 200);
+  assert.ok(response.headers.get('x-request-id'));
   assert.equal(payload.ok, true);
   assert.equal(payload.provider, 'prototype-fallback');
   assert.equal(payload.tavily, false);
@@ -217,6 +222,7 @@ test('/api/generate-map supports catalog smoke without external model keys', asy
   const payload = await getJson(response);
 
   assert.equal(response.status, 200);
+  assert.ok(response.headers.get('x-request-id'));
   assert.equal(payload.provider, 'prototype-fallback');
   assert.equal(payload.mode, 'prototype-fallback');
   assert.equal(payload.map.title, 'The Lever of Riches');
@@ -236,11 +242,15 @@ test('/api/generate-map supports upload smoke without external model keys', asyn
   const payload = await getJson(response);
 
   assert.equal(response.status, 200);
+  assert.ok(response.headers.get('x-request-id'));
   assert.equal(payload.provider, 'prototype-fallback');
   assert.equal(payload.mode, 'prototype-fallback');
   assert.equal(payload.map.title, '上传样本');
   assert.equal(payload.map.author, '上传文件');
   assert.equal(payload.map.sourceMeta.kind, 'upload');
+  await waitForLogsToFlush();
+  assert.equal(serverLogs.includes('复杂系统不是把元素堆起来'), false);
+  assert.equal(serverLogs.includes('真正有效的阅读，不是尽快得到结论'), false);
 });
 
 test('/api/share-map creates and reads share ids, and invalid ids return 404', async () => {
