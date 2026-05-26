@@ -339,8 +339,11 @@ test('/api/generate-map supports upload smoke without external model keys', asyn
   assert.equal(payload.map.author, '上传文件');
   assert.equal(payload.map.sourceMeta.kind, 'upload');
   await waitForLogsToFlush();
+  assert.equal(serverLogs.includes('generate_map_summary'), true);
   assert.equal(serverLogs.includes('复杂系统不是把元素堆起来'), false);
   assert.equal(serverLogs.includes('真正有效的阅读，不是尽快得到结论'), false);
+  assert.equal(serverLogs.includes('Output valid JSON only.'), false);
+  assert.equal(serverLogs.includes('YOUR_SILICONFLOW_API_KEY'), false);
 });
 
 test('/api/share-map creates and reads share ids, and invalid ids return 404', async () => {

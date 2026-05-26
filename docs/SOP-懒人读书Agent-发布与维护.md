@@ -95,6 +95,7 @@ gh repo create amoxuanque/lazymap-reading-agent --public --source=. --remote=ori
 - 是否 `degraded`
 - 是否 `fallback_used`
 - `provider / mode / sourceKind`
+ - 若是 `/api/generate-map`，继续看 `generate_map_summary` 里的阶段耗时与 `fallbackReason`
 3. 日志默认不记录：
 - API Key
 - 上传全文正文
@@ -107,6 +108,17 @@ gh repo create amoxuanque/lazymap-reading-agent --public --source=. --remote=ori
 - `ready`：SiliconFlow 正式生成链路配置齐全
 - `degraded`：正式生成可用，但 Tavily 或书目元数据依赖缺失
 - `unconfigured`：缺关键正式生成配置，只能 fallback 或无法正式生成
+6. 当前生成链路阶段观测重点看：
+- `request_validation`
+- `search_or_source_parse`
+- `grounding`
+- `compact_model`
+- `seed_parse_or_repair`
+- `inflate`
+- `normalize`
+- `cover_lookup`
+- `fallback`
+- `response_build`
 
 ## 回归清单
 

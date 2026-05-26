@@ -187,6 +187,90 @@ function logEvent(level, event, meta = {}) {
   getLogMethod(level)(`[api] ${JSON.stringify(payload)}`);
 }
 
+function createStageTracker() {
+  const requestStartedAt = Date.now();
+  const stages = {};
+
+  const storeStage = (name, startedAt, extra = {}) => {
+    stages[name] = sanitizeLogMeta({
+      durationMs: Date.now() - startedAt,
+      ...extra,
+    });
+  };
+
+  return {
+    async run(name, fn, extra = {}) {
+      const startedAt = Date.now();
+      try {
+        return await fn();
+      } finally {
+        storeStage(name, startedAt, extra);
+      }
+    },
+    runSync(name, fn, extra = {}) {
+      const startedAt = Date.now();
+      try {
+        return fn();
+      } finally {
+        storeStage(name, startedAt, extra);
+      }
+    },
+    mark(name, extra = {}) {
+      stages[name] = sanitizeLogMeta({
+        durationMs: 0,
+        ...extra,
+      });
+    },
+    summary() {
+      return stages;
+    },
+    totalDurationMs() {
+      return Date.now() - requestStartedAt;
+    },
+  };
+}
+
+function classifyGenerateFallbackReason(error, options = {}) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  const fallbackReasonType = classifyError(error, options);
+
+  if (options.reason === 'missing_api_key') {
+    return { fallbackReason: 'missing_api_key', fallbackReasonType: 'prototype_fallback' };
+  }
+  if (/insufficient remaining budget/i.test(message)) {
+    return { fallbackReason: 'insufficient_budget', fallbackReasonType };
+  }
+  if (error instanceof SyntaxError) {
+    return {
+      fallbackReason: error.parseFailureKind || 'json_parse_error',
+      fallbackReasonType,
+    };
+  }
+  if (fallbackReasonType === 'timeout_error') {
+    return { fallbackReason: 'model_timeout', fallbackReasonType };
+  }
+  if (fallbackReasonType === 'external_dependency_error') {
+    return { fallbackReason: 'external_dependency_error', fallbackReasonType };
+  }
+  if (fallbackReasonType === 'model_error') {
+    return { fallbackReason: 'model_error', fallbackReasonType };
+  }
+
+  return { fallbackReason: 'prototype_fallback', fallbackReasonType };
+}
+
+function finalizeGenerateObservation(summary) {
+  appendRequestLogMeta({
+    generateStages: summary.stages,
+    fallbackUsed: summary.fallbackUsed,
+    fallbackReason: summary.fallbackReason || null,
+    fallbackReasonType: summary.fallbackReasonType || null,
+    provider: summary.provider,
+    mode: summary.mode,
+  });
+  logEvent(summary.fallbackUsed ? 'warn' : 'log', 'generate_map_summary', summary);
+}
+
 function getRequestRouteLabel(request) {
   const routePath = request.route?.path;
   if (routePath) {
@@ -2374,10 +2458,12 @@ function extractJsonCandidate(text, repairMode = '') {
     }
   }
 
-  throw new SyntaxError(`Unable to parse model JSON. Preview: ${cleaned.slice(0, 240)}`);
+  const error = new SyntaxError(`Unable to parse model JSON. Preview: ${cleaned.slice(0, 240)}`);
+  error.parseFailureKind = repairMode === 'compact-seed' ? 'repair_failed' : 'json_parse_error';
+  throw error;
 }
 
-async function callSiliconFlow({
+async function fetchSiliconFlowContent({
   prompt,
   maxTokens = 5000,
   temperature = 0.35,
@@ -2427,7 +2513,29 @@ async function callSiliconFlow({
     throw new Error('SiliconFlow returned an empty response.');
   }
 
-  return responseFormat === 'json_object' ? extractJsonCandidate(content, jsonRepairMode) : content.trim();
+  return content.trim();
+}
+
+async function callSiliconFlow({
+  prompt,
+  maxTokens = 5000,
+  temperature = 0.35,
+  responseFormat = 'json_object',
+  model = SILICONFLOW_MODEL,
+  timeoutMs = SILICONFLOW_TIMEOUT_MS,
+  jsonRepairMode = '',
+}) {
+  const content = await fetchSiliconFlowContent({
+    prompt,
+    maxTokens,
+    temperature,
+    responseFormat,
+    model,
+    timeoutMs,
+    jsonRepairMode,
+  });
+
+  return responseFormat === 'json_object' ? extractJsonCandidate(content, jsonRepairMode) : content;
 }
 
 async function translateMapToEnglish(map) {
@@ -3917,10 +4025,13 @@ app.get('/api/share-map/:id', (request, response) => {
 app.post('/api/generate-map', async (request, response) => {
   const input = request.body || {};
   const generateMeta = summarizeGenerateInput(input);
+  const stageTracker = createStageTracker();
   appendRequestLogMeta(generateMeta);
   logEvent('log', 'generate_map_started', generateMeta);
 
-  if (!input.title) {
+  const hasTitle = stageTracker.runSync('request_validation', () => Boolean(input.title));
+
+  if (!hasTitle) {
     appendRequestLogMeta({
       outcome: 'error',
       errorType: 'user_input_error',
@@ -3944,21 +4055,36 @@ app.post('/api/generate-map', async (request, response) => {
       sendGenerationUnavailable(response, '当前环境缺少 SILICONFLOW_API_KEY，暂时无法使用正式生成链路。');
       return;
     }
-    const map = buildPrototypeMap(input);
+    const fallbackMeta = classifyGenerateFallbackReason(null, { reason: 'missing_api_key' });
+    const map = stageTracker.runSync('fallback', () => buildPrototypeMap(input), {
+      fallbackReason: fallbackMeta.fallbackReason,
+    });
+    stageTracker.mark('response_build');
     appendRequestLogMeta({
       provider: 'prototype-fallback',
       mode: 'prototype-fallback',
       degraded: true,
       outcome: 'fallback_used',
       errorType: 'fallback_used',
-      fallbackReason: 'missing_siliconflow_api_key',
+      fallbackReason: fallbackMeta.fallbackReason,
+      fallbackReasonType: fallbackMeta.fallbackReasonType,
+    });
+    finalizeGenerateObservation({
+      sourceKind: generateMeta.sourceKind,
+      provider: 'prototype-fallback',
+      mode: 'prototype-fallback',
+      totalDurationMs: stageTracker.totalDurationMs(),
+      stages: stageTracker.summary(),
+      fallbackUsed: true,
+      fallbackReason: fallbackMeta.fallbackReason,
+      fallbackReasonType: fallbackMeta.fallbackReasonType,
     });
     logEvent('warn', 'generate_map_fallback', {
       provider: 'prototype-fallback',
       mode: 'prototype-fallback',
       degraded: true,
       errorType: 'fallback_used',
-      fallbackReason: 'missing_siliconflow_api_key',
+      fallbackReason: fallbackMeta.fallbackReason,
       ...generateMeta,
     });
     response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
@@ -3967,44 +4093,79 @@ app.post('/api/generate-map', async (request, response) => {
 
   try {
     const deadline = Date.now() + getGenerationBudgetMs(input);
-    const groundingTimeoutMs = capStageTimeout(deadline, COMPACT_GROUNDING_TIMEOUT_MS, 1200);
-    const useCompactGrounding = input.sourceKind === 'catalog'
-      ? hasKnownAuthor(input.author)
-      : Boolean(input.author);
-    const groundingContext = useCompactGrounding && groundingTimeoutMs
-      ? await buildCompactGroundingContext(input, groundingTimeoutMs)
-      : '';
-    const compressedContent = input.sourceKind === 'upload'
-      ? buildCompressedUploadContent(input.content)
-      : '';
-    const modelTimeoutMs = input.sourceKind === 'upload'
-      ? capStageTimeout(deadline, UPLOAD_COMPACT_TIMEOUT_MS, 12000)
-      : capStageTimeout(deadline, CATALOG_COMPACT_TIMEOUT_MS, 10000);
+    const sourcePreparation = stageTracker.runSync('search_or_source_parse', () => {
+      const groundingTimeoutMs = capStageTimeout(deadline, COMPACT_GROUNDING_TIMEOUT_MS, 1200);
+      const useCompactGrounding = input.sourceKind === 'catalog'
+        ? hasKnownAuthor(input.author)
+        : Boolean(input.author);
+      const compressedContent = input.sourceKind === 'upload'
+        ? buildCompressedUploadContent(input.content)
+        : '';
+      const modelTimeoutMs = input.sourceKind === 'upload'
+        ? capStageTimeout(deadline, UPLOAD_COMPACT_TIMEOUT_MS, 12000)
+        : capStageTimeout(deadline, CATALOG_COMPACT_TIMEOUT_MS, 10000);
 
-    if (!modelTimeoutMs) {
+      return {
+        groundingTimeoutMs,
+        useCompactGrounding,
+        compressedContent,
+        modelTimeoutMs,
+      };
+    });
+    const groundingContext = await stageTracker.run('grounding', async () => (
+      sourcePreparation.useCompactGrounding && sourcePreparation.groundingTimeoutMs
+        ? buildCompactGroundingContext(input, sourcePreparation.groundingTimeoutMs)
+        : ''
+    ));
+
+    if (!sourcePreparation.modelTimeoutMs) {
       throw new Error('Remaining generation budget is insufficient for compact map generation.');
     }
 
     const prompt = input.sourceKind === 'upload'
-      ? buildCompactUploadPrompt(input, compressedContent, groundingContext)
+      ? buildCompactUploadPrompt(input, sourcePreparation.compressedContent, groundingContext)
       : buildCompactCatalogPrompt(input, groundingContext);
-    const seed = await buildCompactReadingMap(input, prompt, modelTimeoutMs);
-    const raw = inflateCompactReadingMapSeed(seed, input);
-    const map = normalizeGeneratedMap(raw, input);
+    const seedContent = await stageTracker.run('compact_model', async () => (
+      fetchSiliconFlowContent({
+        prompt,
+        maxTokens: input.sourceKind === 'upload' ? 320 : 500,
+        temperature: 0,
+        responseFormat: 'json_object',
+        model: SILICONFLOW_COMPACT_MODEL,
+        timeoutMs: sourcePreparation.modelTimeoutMs,
+        jsonRepairMode: 'compact-seed',
+      })
+    ));
+    const seed = stageTracker.runSync('seed_parse_or_repair', () => extractJsonCandidate(seedContent, 'compact-seed'));
+    const raw = stageTracker.runSync('inflate', () => inflateCompactReadingMapSeed(seed, input));
+    const map = stageTracker.runSync('normalize', () => normalizeGeneratedMap(raw, input));
     const coverLookupTimeoutMs = capStageTimeout(deadline, COVER_LOOKUP_TIMEOUT_MS, 1000);
-    map.cover = coverLookupTimeoutMs
-      ? await resolveBookCover(map.title, map.author, map.cover, coverLookupTimeoutMs)
-      : (map.cover || fallbackCover);
+    map.cover = await stageTracker.run('cover_lookup', async () => (
+      coverLookupTimeoutMs
+        ? resolveBookCover(map.title, map.author, map.cover, coverLookupTimeoutMs)
+        : (map.cover || fallbackCover)
+    ));
+    stageTracker.mark('response_build');
     appendRequestLogMeta({
       provider: 'siliconflow',
       mode: map.sourceMeta.mode,
     });
+    finalizeGenerateObservation({
+      sourceKind: generateMeta.sourceKind,
+      provider: 'siliconflow',
+      mode: map.sourceMeta.mode,
+      totalDurationMs: stageTracker.totalDurationMs(),
+      stages: stageTracker.summary(),
+      fallbackUsed: false,
+      fallbackReason: null,
+      fallbackReasonType: null,
+    });
     response.json({ map, provider: 'siliconflow', mode: map.sourceMeta.mode });
   } catch (error) {
-    const fallbackReasonType = classifyError(error, { source: 'siliconflow' });
+    const fallbackMeta = classifyGenerateFallbackReason(error, { source: 'siliconflow' });
     logEvent('warn', 'generate_map_failed', {
       provider: 'siliconflow',
-      errorType: fallbackReasonType,
+      errorType: fallbackMeta.fallbackReasonType,
       error: summarizeError(error),
       ...generateMeta,
     });
@@ -4012,28 +4173,54 @@ app.post('/api/generate-map', async (request, response) => {
       error instanceof SyntaxError ||
       (error instanceof Error && /(timeout|aborted)/i.test(error.message));
     if (canUseCompactFallback) {
-      const map = buildPrototypeMap(input);
+      const map = stageTracker.runSync('fallback', () => buildPrototypeMap(input), {
+        fallbackReason: fallbackMeta.fallbackReason,
+      });
       const coverLookupTimeoutMs = capStageTimeout(Date.now() + COVER_LOOKUP_TIMEOUT_MS, COVER_LOOKUP_TIMEOUT_MS, 0);
-      map.cover = coverLookupTimeoutMs
-        ? await resolveBookCover(map.title, map.author, map.cover, coverLookupTimeoutMs)
-        : (map.cover || fallbackCover);
+      map.cover = await stageTracker.run('cover_lookup', async () => (
+        coverLookupTimeoutMs
+          ? resolveBookCover(map.title, map.author, map.cover, coverLookupTimeoutMs)
+          : (map.cover || fallbackCover)
+      ));
+      stageTracker.mark('response_build');
       appendRequestLogMeta({
         provider: 'prototype-fallback',
         mode: 'prototype-fallback',
         degraded: true,
         outcome: 'fallback_used',
         errorType: 'fallback_used',
-        fallbackReason: 'compact_generation_failed',
-        fallbackReasonType,
+        fallbackReason: fallbackMeta.fallbackReason,
+        fallbackReasonType: fallbackMeta.fallbackReasonType,
+      });
+      finalizeGenerateObservation({
+        sourceKind: generateMeta.sourceKind,
+        provider: 'prototype-fallback',
+        mode: 'prototype-fallback',
+        totalDurationMs: stageTracker.totalDurationMs(),
+        stages: stageTracker.summary(),
+        fallbackUsed: true,
+        fallbackReason: fallbackMeta.fallbackReason,
+        fallbackReasonType: fallbackMeta.fallbackReasonType,
       });
       response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
       return;
     }
     if (!ALLOW_PROTOTYPE_FALLBACK) {
+      stageTracker.mark('response_build');
       appendRequestLogMeta({
         provider: 'siliconflow',
         outcome: 'error',
-        errorType: fallbackReasonType,
+        errorType: fallbackMeta.fallbackReasonType,
+      });
+      finalizeGenerateObservation({
+        sourceKind: generateMeta.sourceKind,
+        provider: 'siliconflow',
+        mode: null,
+        totalDurationMs: stageTracker.totalDurationMs(),
+        stages: stageTracker.summary(),
+        fallbackUsed: false,
+        fallbackReason: fallbackMeta.fallbackReason,
+        fallbackReasonType: fallbackMeta.fallbackReasonType,
       });
       sendGenerationUnavailable(
         response,
@@ -4041,16 +4228,29 @@ app.post('/api/generate-map', async (request, response) => {
       );
       return;
     }
-    const map = buildPrototypeMap(input);
-    map.cover = await resolveBookCover(map.title, map.author, map.cover);
+    const map = stageTracker.runSync('fallback', () => buildPrototypeMap(input), {
+      fallbackReason: fallbackMeta.fallbackReason,
+    });
+    map.cover = await stageTracker.run('cover_lookup', async () => resolveBookCover(map.title, map.author, map.cover));
+    stageTracker.mark('response_build');
     appendRequestLogMeta({
       provider: 'prototype-fallback',
       mode: 'prototype-fallback',
       degraded: true,
       outcome: 'fallback_used',
       errorType: 'fallback_used',
-      fallbackReason: 'generation_failed',
-      fallbackReasonType,
+      fallbackReason: fallbackMeta.fallbackReason,
+      fallbackReasonType: fallbackMeta.fallbackReasonType,
+    });
+    finalizeGenerateObservation({
+      sourceKind: generateMeta.sourceKind,
+      provider: 'prototype-fallback',
+      mode: 'prototype-fallback',
+      totalDurationMs: stageTracker.totalDurationMs(),
+      stages: stageTracker.summary(),
+      fallbackUsed: true,
+      fallbackReason: fallbackMeta.fallbackReason,
+      fallbackReasonType: fallbackMeta.fallbackReasonType,
     });
     response.json({ map, provider: 'prototype-fallback', mode: 'prototype-fallback' });
   }
