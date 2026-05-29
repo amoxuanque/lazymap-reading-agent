@@ -413,6 +413,26 @@ const catalogSeedBooks = [
     },
   },
   {
+    id: 'seed-lever-of-riches',
+    title: 'The Lever of Riches',
+    author: 'Joel Mokyr',
+    aliases: ['The Lever of Riches', 'Joel Mokyr'],
+    cover: fallbackCover,
+    oneLiner: { zh: '技术突破不是偶然灵感，而要看社会怎样给创造力留出空间。' },
+    saves: 0,
+    status: 'no_map_paid',
+    source: 'catalog',
+    compactSeed: {
+      oneLiner: '财富史真正的杠杆在持续创新',
+      about: 'Mokyr 用长时段经济史解释技术创造力、制度激励与财富增长如何互相牵引',
+      overview: ['先问技术为什么不是自然发生', '再看发明如何依赖社会激励', '把欧洲跃迁放回长期分化', '最后看创造力怎样改写财富史'],
+      parts: ['技术突破先要有可用的社会土壤', '发明和扩散从来不是同一件事', '制度与观念会决定创造力能走多远', '财富史真正的杠杆在持续创新'],
+      methods: ['先分开发明、扩散和增长', '别把富裕只读成资源禀赋', '用长时段看技术与制度共振', '先问什么环境会奖励创造力'],
+      quotes: ['关键判断：真正拉开财富差距的，往往不是一次发明，而是社会是否能持续奖励创新。', '关键判断：技术史如果离开制度和观念去读，很容易只剩下一串孤立发明。'],
+      routes: ['先看技术与激励，再看制度与分化，最后回到财富增长的长期逻辑。', '如果只想抓核心判断，重点读创新激励、扩散机制和欧洲跃迁。'],
+    },
+  },
+  {
     id: 'seed-siddhartha',
     title: '悉达多 (Siddhartha)',
     author: 'Hermann Hesse',
@@ -430,6 +450,26 @@ const catalogSeedBooks = [
       methods: ['别把他人的觉悟当自己的答案', '先经历再判断什么是真理', '把矛盾放回同一条生命线', '学会倾听而不是急着下结论'],
       quotes: ['关键判断：这本书真正反复确认的，不是找到老师，而是不能替别人活出觉悟。', '关键判断：真理如果只能被讲述却不能被经历，最终仍然不属于你。'],
       routes: ['先看离家求道，再看尘世沉浮，最后回到河流与觉悟。', '如果只想抓核心判断，重点读与佛陀相遇、尘世经历和河边顿悟。'],
+    },
+  },
+  {
+    id: 'seed-zhizhenshinei',
+    title: '置身事内：中国政府与经济发展',
+    author: '兰小欢',
+    aliases: ['置身事内', '置身事内：中国政府与经济发展', '兰小欢'],
+    cover: fallbackCover,
+    oneLiner: { zh: '中国增长要放回地方政府财政激励里看，才会真正看清。' },
+    saves: 0,
+    status: 'no_map_paid',
+    source: 'catalog',
+    compactSeed: {
+      oneLiner: '增长逻辑先看地方政府怎样做账',
+      about: '从央地关系、土地财政、城投融资和债务压力解释中国经济增长的动力与代价',
+      overview: ['先把增长放回财政激励', '再看地方政府怎样做账和融资', '把土地与债务放回同一条链', '最后看改革空间与增长代价'],
+      parts: ['分税制后地方为何重新找钱', '土地财政怎样撑起增长机器', '城投与债务把激励推到极限', '理解中国经济不能只看市场也要看政府'],
+      methods: ['先看激励结构再看政策口号', '把土地财政和债务一起读', '分清中央目标和地方执行逻辑', '别把短期增长直接当长期健康'],
+      quotes: ['关键判断：理解中国经济，不能只看市场变量，还要看地方政府的财政激励。', '关键判断：很多增长并不是自然长出来的，而是被土地、融资和考核机制一起推出来的。'],
+      routes: ['先看财政激励，再看土地与城投，最后回到改革边界和增长代价。', '如果只想抓核心判断，重点读分税制、土地财政、地方债务和央地关系。'],
     },
   },
   {
@@ -532,11 +572,14 @@ function tokenize(value) {
     .filter(Boolean);
 }
 
+const englishStopwords = new Set(['the', 'of', 'and', 'for', 'with', 'from', 'into', 'onto', 'that', 'this', 'your', 'their', 'our', 'a', 'an', 'to', 'in', 'on']);
+
 function extractGroundingKeywords(value) {
   return String(value || '')
     .split(/[《》:：,，、\/\s]+/)
     .map((item) => item.trim())
-    .filter((item) => item.length >= 2);
+    .filter((item) => item.length >= 2)
+    .filter((item) => !englishStopwords.has(item.toLowerCase()));
 }
 
 function toSlug(value) {
@@ -692,6 +735,527 @@ function cloneCompactSeed(seed) {
   };
 }
 
+const catalogInternalLeakPattern = /(catalog 模式|prototype[-\s]?fallback|partial[-\s]?fallback|\bseed\b|\bprompt\b|quote 统一处理)/ig;
+const repetitiveCatalogPhrasePattern = /(回原书确认|回原书核对|是进入这本书的一段核心阅读模块|先用.?判断这一部分值得读什么|围绕.+相关章节优先精读)/;
+
+function uniqueTrimmedList(list, limit = 4) {
+  const seen = new Set();
+  const output = [];
+
+  (Array.isArray(list) ? list : []).forEach((item) => {
+    const cleaned = trimText(item);
+    const key = normalize(cleaned);
+    if (!cleaned || !key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    output.push(cleaned);
+  });
+
+  return output.slice(0, limit);
+}
+
+function sanitizeCatalogVisibleText(value, fallback = '') {
+  const cleaned = trimText(value)
+    .replace(catalogInternalLeakPattern, '')
+    .replace(/quote[s]?\s*=\s*judgment-based/ig, '')
+    .replace(/grounding-only/ig, '')
+    .replace(/回原书确认/g, '再顺着关键段落细看')
+    .replace(/回原书核对/g, '再顺着关键段落细看')
+    .replace(/围绕(.+?)相关章节优先精读/g, '沿着$1这条线优先细看')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/[，。；：]\s*[，。；：]/g, '。')
+    .replace(/^[，。；：\s]+|[，。；：\s]+$/g, '')
+    .trim();
+
+  return cleaned || trimText(fallback);
+}
+
+function extractCatalogFocus(text, fallback = '这条线索') {
+  const cleaned = sanitizeCatalogVisibleText(text, fallback)
+    .replace(/^[#《》"'“”]+|[#《》"'“”]+$/g, '')
+    .replace(/^(先|再|把|最后|沿着|从|让|别)\s*/g, '')
+    .replace(/^(第一层|第二层|第三层|第四层|第一部分|第二部分|第三部分|第四部分)\s*/g, '')
+    .replace(/[。！？!?；;]+$/g, '')
+    .trim();
+
+  return cleaned.slice(0, 18) || fallback;
+}
+
+function buildCatalogOverviewPoints(title, index) {
+  const focus = extractCatalogFocus(title, '这一层');
+  const pointTemplates = [
+    [
+      `先分清${focus}想回答什么`,
+      '别把开场读成普通背景',
+      '后面的推进都从这里起势',
+    ],
+    [
+      `留意${focus}带来的碰撞`,
+      '看作者怎样把问题往深处推',
+      '这一层决定后面该怎么读',
+    ],
+    [
+      `把${focus}放回更大的代价`,
+      '别只记表面事件或概念',
+      '真正的判断在这里开始变硬',
+    ],
+    [
+      `看${focus}怎样收束前面线索`,
+      '判断最后落在什么位置',
+      '读完后再决定哪些段落值得深看',
+    ],
+  ];
+
+  return pointTemplates[index % pointTemplates.length].map((item) => sanitizeCatalogVisibleText(item));
+}
+
+function buildCatalogPartToolkit(title, index) {
+  const focus = extractCatalogFocus(title, '这一段');
+  const navTemplates = [
+    `先看 ${focus} 为什么会成为整本书的起手分水岭。`,
+    `这一段真正要看的，不是表面信息，而是 ${focus} 怎样把问题推向更深处。`,
+    `${focus} 这一段最值得细看的是它把代价、欲望或结构压力怎样压到一起。`,
+    `${focus} 负责把前面的分散线索收束成最后的判断落点。`,
+  ];
+  const introTemplates = [
+    `${focus} 这一段先把读者从熟悉答案里拉开，逼你正面看作者真正关心的问题。`,
+    `${focus} 这一段不是补充材料，而是整本书从“听到观点”转向“开始碰撞”的位置。`,
+    `${focus} 这一段要看的不是热闹，而是它怎样让前面的判断接受现实检验。`,
+    `${focus} 这一段把前面的转折、人物和代价重新并在一起，决定全书最后落到哪里。`,
+  ];
+  const taskTemplates = [
+    `先判断 ${focus} 改变了读这本书的哪个前提。`,
+    `盯住 ${focus} 带来的冲突，别急着把它读成现成答案。`,
+    `把 ${focus} 放回人物选择、现实代价和判断变化里一起看。`,
+    `顺着 ${focus} 回收全书主判断，再决定哪些段落值得细看。`,
+  ];
+  const positionTemplates = [
+    `${focus} 先把整本书的问题意识钉住，没有这一段，后面的判断会显得漂。`,
+    `${focus} 负责把主题从抽象命题推进成真正发生碰撞的结构中段。`,
+    `${focus} 是全书从概念走向代价的地方，也是最容易读出厚度的一段。`,
+    `${focus} 把前面几段的线索重新并拢，决定读者最后带走什么判断。`,
+  ];
+  const takeawayTemplates = [
+    `${focus} 不只是内容节点，更是阅读入口的第一道门。`,
+    '这一段要盯住转折，而不是只摘一句漂亮结论。',
+    '读完后要能说清它如何改写了前面的判断。',
+  ];
+  const chapterTemplates = [
+    `${focus} 的起手动作`,
+    `${focus} 带来的转折`,
+    `${focus} 如何影响后文`,
+  ];
+
+  return {
+    navDesc: sanitizeCatalogVisibleText(navTemplates[index % navTemplates.length]),
+    intro: sanitizeCatalogVisibleText(introTemplates[index % introTemplates.length]),
+    task: sanitizeCatalogVisibleText(taskTemplates[index % taskTemplates.length]),
+    position: sanitizeCatalogVisibleText(positionTemplates[index % positionTemplates.length]),
+    takeaways: takeawayTemplates.map((item) => sanitizeCatalogVisibleText(item)),
+    chapters: chapterTemplates.map((item) => sanitizeCatalogVisibleText(item)),
+    tags: uniqueTrimmedList([focus, '关键转折', '阅读切口'], 3),
+  };
+}
+
+function buildCatalogMethodDescription(title, index) {
+  const focus = extractCatalogFocus(title, '这一步');
+  const templates = [
+    `别把 ${focus} 当口号，先看它在全书里是怎样一步步被推出来的。`,
+    `用 ${focus} 去分辨作者是在给答案，还是在逼读者换一种看法。`,
+    `把 ${focus} 放回人物、结构或代价里一起看，方法卡才不会飘在空中。`,
+    `沿着 ${focus} 去找真正的转折点，而不是平均浏览所有章节。`,
+  ];
+
+  return sanitizeCatalogVisibleText(templates[index % templates.length]);
+}
+
+function buildCatalogQuoteNote(index) {
+  const notes = [
+    '它更像这本书的入口判断，适合先拿来校准阅读重心。',
+    '用它提醒自己别把整本书读成一句正确废话。',
+    '这句话值得和人物、转折或代价放在一起看，才能读出厚度。',
+    '把它当成最后的阅读标尺，看看前面几段究竟推到了哪里。',
+  ];
+
+  return notes[index % notes.length];
+}
+
+function hasCatalogLeakText(value) {
+  return catalogInternalLeakPattern.test(String(value || ''));
+}
+
+function buildCatalogAreaFromPart(part, index) {
+  const fallbackStatuses = ['起点已显影', '转折已抬升', '代价已压实', '落点已收束'];
+  const fallbackProgress = [84, 76, 68, 60];
+  const fallbackColors = ['bg-orange-500', 'bg-cyan-500', 'bg-emerald-500', 'bg-pink-500'];
+  const title = sanitizeCatalogVisibleText(part?.title, `第${index + 1}个阅读模块`);
+  const focus = extractCatalogFocus(title, `第${index + 1}条线`);
+  const desc = sanitizeCatalogVisibleText(
+    part?.position || part?.navDesc || part?.intro,
+    `${focus} 这条线决定这一段在整本书里为什么重要，适合先当成阅读支点。`,
+  );
+
+  return {
+    title,
+    status: fallbackStatuses[index % fallbackStatuses.length],
+    progress: fallbackProgress[index % fallbackProgress.length],
+    color: fallbackColors[index % fallbackColors.length],
+    desc,
+  };
+}
+
+function buildCatalogToolPoints(title, referenceTexts = [], index = 0) {
+  const focus = extractCatalogFocus(title, '这一步');
+  const cleanedReferences = uniqueTrimmedList(referenceTexts.map((item) => sanitizeCatalogVisibleText(item)).filter(Boolean), 3);
+  const fallbackGroups = [
+    [`先看${focus}想解决什么`, '别把它读成抽象标签', '再回到具体转折判断它怎样成立'],
+    [`用${focus}区分入口和结论`, '先看这一步卡住了什么误读', '再判断它如何推动后文'],
+    [`沿着${focus}找关键转折`, '把人物、代价或结构一起看', '别把漂亮说法当成最终答案'],
+    [`用${focus}回收前面线索`, '看它怎样决定整本书的落点', '读完后再决定哪些段落值得深看'],
+  ];
+
+  return uniqueTrimmedList(cleanedReferences.concat(fallbackGroups[index % fallbackGroups.length]), 3);
+}
+
+function isGenericCatalogArea(area) {
+  const title = trimText(area?.title);
+  const desc = trimText(area?.desc);
+  return !title || /^(主题入口|公开结构线索|阅读判断框架|误读风险)$/.test(title) || /公开资料|阅读框架|过度简化|值不值得读/.test(desc);
+}
+
+function isGenericCatalogTool(tool) {
+  const title = trimText(tool?.title);
+  const desc = trimText(tool?.desc);
+  return !title || /^(先确认公开线索|把主题压成阅读切口|先看边界再看结论|让路线服务于是否深读)$/.test(title) || /公开资料|切口|值不值得读/.test(desc);
+}
+
+function isGenericCatalogTimelineItem(item) {
+  const year = trimText(item?.year);
+  const title = trimText(item?.title);
+  return /^(入口|结构|边界|深读|阶段一|阶段二|阶段三|阶段四)$/.test(year) || /确认主题线索|整理公开框架|识别争议与误读|决定是否深读/.test(title);
+}
+
+function buildCatalogFullDensitySections(map, input) {
+  const sanitizedOverviewCards = (map?.overview?.cards || []).slice(0, 4).map((card, index) => ({
+    ...card,
+    title: sanitizeCatalogVisibleText(card?.title, buildCatalogLocalCompactSeed(input).overview[index] || `第${index + 1}层判断`),
+    desc: sanitizeCatalogVisibleText(card?.desc, buildCatalogOverviewPoints(card?.title, index)[0]),
+    points: uniqueTrimmedList((card?.points || []).map((point) => sanitizeCatalogVisibleText(point)).filter(Boolean), 3),
+  }));
+  const parts = (map?.parts || []).slice(0, 6).map((part, index) => ({
+    ...part,
+    title: sanitizeCatalogVisibleText(part?.title, `第${index + 1}个阅读模块`),
+    navDesc: sanitizeCatalogVisibleText(part?.navDesc, buildCatalogPartToolkit(part?.title, index).navDesc),
+    intro: sanitizeCatalogVisibleText(part?.intro, buildCatalogPartToolkit(part?.title, index).intro),
+    task: sanitizeCatalogVisibleText(part?.task, buildCatalogPartToolkit(part?.title, index).task),
+    position: sanitizeCatalogVisibleText(part?.position, buildCatalogPartToolkit(part?.title, index).position),
+    takeaways: uniqueTrimmedList((part?.takeaways || []).map((item) => sanitizeCatalogVisibleText(item)).filter(Boolean), 3),
+    chapters: uniqueTrimmedList((part?.chapters || []).map((item) => sanitizeCatalogVisibleText(item)).filter(Boolean), 3),
+  }));
+  const methodItems = renumberMethodItems((map?.methods?.items || []).slice(0, 16).map((item, index) => ({
+    ...item,
+    title: sanitizeCatalogVisibleText(item?.title, `方法 ${index + 1}`),
+    desc: sanitizeCatalogVisibleText(item?.desc, buildCatalogMethodDescription(item?.title, index)),
+  })));
+  const derivedAreas = parts.slice(0, 4).map((part, index) => buildCatalogAreaFromPart(part, index));
+  const derivedTools = methodItems.slice(0, 4).map((item, index) => {
+    const relatedPart = parts[index % Math.max(parts.length, 1)] || {};
+    return {
+      title: sanitizeCatalogVisibleText(item?.title, `阅读工具 ${index + 1}`),
+      desc: sanitizeCatalogVisibleText(item?.desc, buildCatalogMethodDescription(item?.title, index)),
+      points: buildCatalogToolPoints(item?.title, [
+        relatedPart?.task,
+        relatedPart?.position,
+        sanitizedOverviewCards[index % Math.max(sanitizedOverviewCards.length, 1)]?.title,
+      ], index),
+    };
+  });
+  const derivedTimeline = parts.slice(0, 4).map((part, index) => ({
+    year: ['起点', '转折', '试炼', '收束'][index] || `阶段${index + 1}`,
+    title: sanitizeCatalogVisibleText(part?.title, `第${index + 1}阶段`),
+    desc: sanitizeCatalogVisibleText(part?.position || part?.navDesc || part?.intro, `${extractCatalogFocus(part?.title, '这一段')} 这一段把整本书往前推进。`),
+  }));
+  const routeFallback = buildFallbackRoutes(input, map?.title || input.title);
+  const derivedRoutes = [
+    {
+      audience: '先判断值不值得读的人',
+      route: sanitizeCatalogVisibleText(`先看${parts[0]?.title || sanitizedOverviewCards[0]?.title || '主问题'}，再看${parts[1]?.title || sanitizedOverviewCards[1]?.title || '关键转折'}，最后确认${parts[parts.length - 1]?.title || sanitizedOverviewCards[3]?.title || '最终落点'}。`),
+      focus: uniqueTrimmedList([
+        parts[0]?.title,
+        parts[1]?.title,
+        parts[parts.length - 1]?.title,
+      ].map((item) => sanitizeCatalogVisibleText(item)).filter(Boolean), 3),
+    },
+    {
+      audience: '想顺着推进线读的人',
+      route: sanitizeCatalogVisibleText(parts.length >= 4
+        ? `顺着${parts[0].title} -> ${parts[1].title} -> ${parts[2].title} -> ${parts[3].title}去看这本书怎样一步步把判断压实。`
+        : routeFallback[1]?.route),
+      focus: uniqueTrimmedList(parts.slice(0, 3).map((part) => sanitizeCatalogVisibleText(part?.title)).filter(Boolean), 3),
+    },
+    {
+      audience: '准备完整精读的人',
+      route: sanitizeCatalogVisibleText(`先用总览定四段顺序，再回到${parts[1]?.title || '中段转折'}和${parts[2]?.title || '关键代价'}细看人物、关系或结构压力。`),
+      focus: uniqueTrimmedList([
+        sanitizedOverviewCards[0]?.title,
+        parts[1]?.title,
+        parts[2]?.title,
+      ].map((item) => sanitizeCatalogVisibleText(item)).filter(Boolean), 3),
+    },
+  ];
+  const currentQuotes = (map?.quotes || []).slice(0, 8).map((item, index) => ({
+    quote: sanitizeCatalogVisibleText(item?.quote, buildFallbackQuotes(input, map?.title || input.title)[index % 4]?.quote),
+    note: sanitizeCatalogVisibleText(item?.note, buildCatalogQuoteNote(index)),
+  }));
+  const quoteFallback = buildFallbackQuotes(input, map?.title || input.title);
+  const derivedQuotes = uniqueTrimmedList([
+    ...currentQuotes.map((item) => item.quote),
+    `关键判断：${sanitizeCatalogVisibleText(map?.oneLiner?.zh, buildCatalogLocalCompactSeed(input).oneLiner)}`,
+    `关键判断：先沿着${extractCatalogFocus(parts[0]?.title || sanitizedOverviewCards[0]?.title, '开场问题')}到${extractCatalogFocus(parts[parts.length - 1]?.title || sanitizedOverviewCards[3]?.title, '最终落点')}的推进线去读，整本书才不会被压成一句空话。`,
+    ...quoteFallback.map((item) => item.quote),
+  ], 4).map((quote, index) => ({
+    quote: quote.startsWith('关键判断：') ? quote : `关键判断：${quote}`,
+    note: currentQuotes.find((item) => normalize(item.quote) === normalize(quote))?.note || buildCatalogQuoteNote(index),
+  }));
+
+  return {
+    areas: derivedAreas,
+    tools: derivedTools,
+    timeline: derivedTimeline,
+    routes: derivedRoutes.concat(routeFallback).slice(0, 4),
+    quotes: derivedQuotes,
+  };
+}
+
+function needsCatalogLightEnrich(rawMap, input, groundingContext = '') {
+  if (getSourceStrategy(input) !== 'catalog' || !rawMap) {
+    return false;
+  }
+
+  const hasCuratedSeed = Boolean(findBestCatalogSeed(input?.title || ''));
+  const methodsCount = rawMap?.methods?.items?.length || 0;
+  const routesCount = rawMap?.routes?.length || 0;
+  const debatesCount = rawMap?.debates?.length || 0;
+  const timelineCount = rawMap?.timeline?.length || 0;
+  const knowledgeToolCount = rawMap?.knowledgeMap?.tools?.length || 0;
+  const knowledgeAreaCount = rawMap?.knowledgeMap?.areas?.length || 0;
+  const strongGrounding = extractCatalogGroundingHints(groundingContext, input).length >= 3;
+
+  return (hasCuratedSeed || strongGrounding) && (
+    methodsCount < 10 ||
+    routesCount < 3 ||
+    debatesCount < 2 ||
+    timelineCount < 4 ||
+    knowledgeToolCount < 4 ||
+    knowledgeAreaCount < 4
+  );
+}
+
+function applyCatalogQualityFloor(map, input) {
+  if (getSourceStrategy(input) !== 'catalog' || !map) {
+    return map;
+  }
+
+  const denseSections = buildCatalogFullDensitySections(map, input);
+
+  const overviewCards = (map?.overview?.cards || []).slice(0, 4).map((card, index) => {
+    const title = sanitizeCatalogVisibleText(card?.title, buildCatalogLocalCompactSeed(input).overview[index] || `第${index + 1}层判断`);
+    const desc = sanitizeCatalogVisibleText(card?.desc, `${extractCatalogFocus(title, '这一层')} 决定这一层真正该怎么读。`);
+    const points = uniqueTrimmedList(
+      (Array.isArray(card?.points) ? card.points : [])
+        .map((point) => sanitizeCatalogVisibleText(point))
+        .filter((point) => point && normalize(point) !== normalize(title)),
+      3,
+    );
+
+    return {
+      ...card,
+      title,
+      desc,
+      points: points.length >= 3 ? points : buildCatalogOverviewPoints(title, index),
+    };
+  });
+
+  const parts = (map?.parts || []).slice(0, 6).map((part, index) => {
+    const title = sanitizeCatalogVisibleText(part?.title, `第${index + 1}个阅读模块`);
+    const toolkit = buildCatalogPartToolkit(title, index);
+    const takeaways = uniqueTrimmedList(
+      (Array.isArray(part?.takeaways) ? part.takeaways : [])
+        .map((item) => sanitizeCatalogVisibleText(item))
+        .filter((item) => item && normalize(item) !== normalize(title)),
+      3,
+    );
+    const chapters = uniqueTrimmedList(
+      (Array.isArray(part?.chapters) ? part.chapters : [])
+        .map((item) => sanitizeCatalogVisibleText(item))
+        .filter(Boolean),
+      3,
+    );
+
+    return {
+      ...part,
+      title,
+      navDesc: repetitiveCatalogPhrasePattern.test(String(part?.navDesc || '')) ? toolkit.navDesc : sanitizeCatalogVisibleText(part?.navDesc, toolkit.navDesc),
+      intro: repetitiveCatalogPhrasePattern.test(String(part?.intro || '')) ? toolkit.intro : sanitizeCatalogVisibleText(part?.intro, toolkit.intro),
+      task: repetitiveCatalogPhrasePattern.test(String(part?.task || '')) ? toolkit.task : sanitizeCatalogVisibleText(part?.task, toolkit.task),
+      position: repetitiveCatalogPhrasePattern.test(String(part?.position || '')) ? toolkit.position : sanitizeCatalogVisibleText(part?.position, toolkit.position),
+      tags: uniqueTrimmedList((Array.isArray(part?.tags) ? part.tags : []).map((item) => sanitizeCatalogVisibleText(item)).concat(toolkit.tags), 3),
+      takeaways: takeaways.length >= 3 ? takeaways : toolkit.takeaways,
+      chapters: chapters.length >= 3 ? chapters : toolkit.chapters,
+    };
+  });
+
+  const methods = {
+    ...(map?.methods || {}),
+    categories: uniqueTrimmedList((map?.methods?.categories || []).map((item) => sanitizeCatalogVisibleText(item)).concat(['阅读入口', '判断框架', '边界提醒']), 6),
+    items: renumberMethodItems((map?.methods?.items || []).slice(0, 16).map((item, index) => ({
+      ...item,
+      title: sanitizeCatalogVisibleText(item?.title, `方法 ${index + 1}`),
+      desc: sanitizeCatalogVisibleText(item?.desc, buildCatalogMethodDescription(item?.title, index)),
+    }))),
+  };
+  const denseMethods = methods.items.length >= 10 ? methods : extendMethodsFallback({
+    ...map,
+    methods,
+    knowledgeMap: {
+      areas: (map?.knowledgeMap?.areas || []).slice(0, 6),
+      tools: denseSections.tools,
+    },
+    parts,
+  });
+
+  const quotes = (map?.quotes || []).slice(0, 8).map((item, index) => {
+    const quote = sanitizeCatalogVisibleText(item?.quote);
+    return {
+      ...item,
+      quote: quote.startsWith('关键判断：') ? quote : `关键判断：${quote.replace(/^["“”'']+|["“”'']+$/g, '')}`,
+      note: sanitizeCatalogVisibleText(item?.note, buildCatalogQuoteNote(index)),
+    };
+  });
+  const denseQuotes = uniqueTrimmedList(
+    quotes.map((item) => item.quote).concat(denseSections.quotes.map((item) => item.quote)),
+    4,
+  ).map((quote, index) => ({
+    quote: quote.startsWith('关键判断：') ? quote : `关键判断：${quote}`,
+    note: quotes.find((item) => normalize(item.quote) === normalize(quote))?.note || denseSections.quotes[index % denseSections.quotes.length]?.note || buildCatalogQuoteNote(index),
+  }));
+
+  const debates = (map?.debates || []).slice(0, 4).map((item, index) => {
+    const fallback = buildFallbackDebates(input, map?.title || input.title)[index % 2];
+    return {
+      ...item,
+      title: sanitizeCatalogVisibleText(item?.title, fallback.title),
+      value: sanitizeCatalogVisibleText(item?.value, fallback.value),
+      reservation: sanitizeCatalogVisibleText(item?.reservation, fallback.reservation),
+    };
+  });
+
+  const routes = (map?.routes || []).slice(0, 4).map((item, index) => {
+    const fallback = buildFallbackRoutes(input, map?.title || input.title)[index % 3];
+    return {
+      ...item,
+      audience: sanitizeCatalogVisibleText(item?.audience, fallback.audience),
+      route: sanitizeCatalogVisibleText(item?.route, fallback.route),
+      focus: uniqueTrimmedList((Array.isArray(item?.focus) ? item.focus : []).map((entry) => sanitizeCatalogVisibleText(entry)).concat(fallback.focus || []), 3),
+    };
+  });
+  const seenRouteAudiences = new Set();
+  const denseRoutes = denseSections.routes
+    .concat(routes)
+    .concat(buildFallbackRoutes(input, map?.title || input.title))
+    .map((item) => ({
+      audience: sanitizeCatalogVisibleText(item?.audience),
+      route: sanitizeCatalogVisibleText(item?.route),
+      focus: uniqueTrimmedList((item?.focus || []).map((entry) => sanitizeCatalogVisibleText(entry)).filter(Boolean), 3),
+    }))
+    .filter((item) => {
+      const key = normalize(item.audience);
+      if (!item.audience || !item.route || !key || seenRouteAudiences.has(key)) {
+        return false;
+      }
+      seenRouteAudiences.add(key);
+      return true;
+    })
+    .slice(0, 4)
+    .map((item, index) => {
+      const entry = `${item.audience}::${item.route}`;
+      const [audience, route] = entry.split('::');
+      const existing = routes.find((item) => normalize(`${item.audience}::${item.route}`) === normalize(entry));
+      const fallback = denseSections.routes[index % denseSections.routes.length];
+      return {
+        audience: sanitizeCatalogVisibleText(existing?.audience || audience, fallback?.audience),
+        route: sanitizeCatalogVisibleText(existing?.route || route, fallback?.route),
+        focus: uniqueTrimmedList((existing?.focus || []).concat(fallback?.focus || []).map((item) => sanitizeCatalogVisibleText(item)).filter(Boolean), 3),
+      };
+    });
+
+  const knowledgeAreas = (map?.knowledgeMap?.areas || []).slice(0, 6).map((area, index) => ({
+    ...area,
+    title: sanitizeCatalogVisibleText(area?.title, denseSections.areas[index % denseSections.areas.length]?.title),
+    status: sanitizeCatalogVisibleText(area?.status, denseSections.areas[index % denseSections.areas.length]?.status),
+    progress: Number(area?.progress) > 0 ? Math.min(Number(area.progress), 100) : denseSections.areas[index % denseSections.areas.length]?.progress,
+    color: sanitizeCatalogVisibleText(area?.color, denseSections.areas[index % denseSections.areas.length]?.color),
+    desc: sanitizeCatalogVisibleText(area?.desc, denseSections.areas[index % denseSections.areas.length]?.desc),
+  }));
+  const denseKnowledgeAreas = knowledgeAreas.length >= 4 && !knowledgeAreas.every((area) => isGenericCatalogArea(area))
+    ? knowledgeAreas
+    : denseSections.areas;
+
+  const knowledgeTools = (map?.knowledgeMap?.tools || []).slice(0, 6).map((tool, index) => ({
+    ...tool,
+    title: sanitizeCatalogVisibleText(tool?.title, denseSections.tools[index % denseSections.tools.length]?.title),
+    desc: sanitizeCatalogVisibleText(tool?.desc, denseSections.tools[index % denseSections.tools.length]?.desc),
+    points: uniqueTrimmedList((tool?.points || []).map((point) => sanitizeCatalogVisibleText(point)).concat(denseSections.tools[index % denseSections.tools.length]?.points || []), 3),
+  }));
+  const denseKnowledgeTools = knowledgeTools.length >= 4 && !knowledgeTools.every((tool) => isGenericCatalogTool(tool))
+    ? knowledgeTools
+    : denseSections.tools;
+
+  const timeline = (map?.timeline || []).slice(0, 6).map((item, index) => ({
+    ...item,
+    year: sanitizeCatalogVisibleText(item?.year, denseSections.timeline[index % denseSections.timeline.length]?.year),
+    title: sanitizeCatalogVisibleText(item?.title, denseSections.timeline[index % denseSections.timeline.length]?.title),
+    desc: sanitizeCatalogVisibleText(item?.desc, denseSections.timeline[index % denseSections.timeline.length]?.desc),
+  }));
+  const denseTimeline = timeline.length >= 4 && !timeline.every((item) => isGenericCatalogTimelineItem(item))
+    ? timeline
+    : denseSections.timeline;
+
+  return {
+    ...map,
+    oneLiner: {
+      ...map.oneLiner,
+      zh: sanitizeCatalogVisibleText(map?.oneLiner?.zh, buildCatalogLocalCompactSeed(input).oneLiner),
+    },
+    about: {
+      ...map.about,
+      zh: sanitizeCatalogVisibleText(map?.about?.zh, buildCatalogLocalCompactSeed(input).about),
+    },
+    readingPosition: {
+      ...map.readingPosition,
+      zh: sanitizeCatalogVisibleText(map?.readingPosition?.zh, '先抓总判断和关键转折，再决定哪些人物、章节或争议值得深看。'),
+    },
+    overview: {
+      ...map.overview,
+      title: sanitizeCatalogVisibleText(map?.overview?.title, '先抓全书骨架，再进入关键细节'),
+      subtitle: sanitizeCatalogVisibleText(map?.overview?.subtitle, '从主问题、推进线、关键转折和读法四层进入这本书。'),
+      cards: overviewCards,
+    },
+    parts,
+    knowledgeMap: {
+      ...(map?.knowledgeMap || {}),
+      areas: denseKnowledgeAreas,
+      tools: denseKnowledgeTools,
+    },
+    methods: denseMethods,
+    timeline: denseTimeline,
+    quotes: denseQuotes,
+    debates,
+    routes: denseRoutes,
+  };
+}
+
 function toPublicSearchBook(book) {
   if (!book || typeof book !== 'object') {
     return book;
@@ -754,7 +1318,7 @@ function buildPrototypeMap(input) {
         {
           title: `${curatedParts[0] || '这本书的第一判断'}为什么值得先抓`,
           value: `${curatedCatalogSeed.about || `先抓《${title}》的主问题和判断框架，能更快决定这本书值不值得深读。`}`,
-          reservation: `即便入口已经明确，${title} 的完整论证和章节推进仍需要回到原书确认。`,
+        reservation: `即便入口已经明确，${title} 的完整论证和章节推进仍需要顺着关键段落继续细看。`,
         },
         {
           title: `${curatedQuotes[0]?.replace(/^关键判断：/, '').slice(0, 20) || '这本书的核心判断'}是否容易被读浅`,
@@ -872,7 +1436,7 @@ function buildPrototypeMap(input) {
         intro: excerpt[2] || (curatedParts[2] ? `${curatedParts[2]} 不是复述，而是提取对工作和思考有用的方法。` : '这里不是复述，而是提取对工作和思考有用的方法。'),
         tags: ['可复用', '适合做工作素材'],
         task: curatedMethods[2] || '提炼值得带走的方法、判断和提醒。',
-        takeaways: curatedParts[2] ? [curatedParts[2], curatedMethods[2] || '方法要能迁移', '回到原书看边界'] : ['方法要能迁移到别的场景。'],
+        takeaways: curatedParts[2] ? [curatedParts[2], curatedMethods[2] || '方法要能迁移', '别忘了连同边界一起看'] : ['方法要能迁移到别的场景。'],
         chapters: curatedParts[2] ? [curatedParts[2], curatedMethods[2] || '方法动作', curatedQuotes[0]?.replace(/^关键判断：/, '').slice(0, 12) || '常见误区'] : ['判断标准', '方法动作', '常见误区'],
         position: '这是把阅读结果资产化的关键一层。',
       },
@@ -914,14 +1478,14 @@ function buildPrototypeMap(input) {
     quotes: curatedQuotes.length
       ? curatedQuotes.map((quote, index) => ({
         quote,
-        note: index === 0 ? '先用这条判断建立入口，再决定是否回原书深读。' : '这条判断更适合用来提醒自己阅读时该警惕什么。',
+        note: index === 0 ? '先用这条判断建立入口，再决定哪些人物、章节或转折值得细看。' : '这条判断更适合用来提醒自己阅读时该警惕什么。',
       }))
       : [{ quote: `《${title}》真正值得看的，不只是结论，而是作者如何组织问题、展开结构并提出判断。`, note: '先抓问题和结构，再决定要深读哪些章节。' }],
-    debates: derivedDebates || [{ title: '这本书最值得先抓住什么', value: '先抓核心命题、结构推进和可迁移的方法卡，再进入细节。', reservation: '如果要做更细的章节级阅读，仍需要回到原书逐章对照。' }],
+    debates: derivedDebates || [{ title: '这本书最值得先抓住什么', value: '先抓核心命题、结构推进和可迁移的方法卡，再进入细节。', reservation: '如果要做更细的章节级阅读，仍需要沿着关键段落逐步对照。' }],
     routes: curatedRoutes.length
       ? [
         { audience: '先快速判断值不值得读的人', route: curatedRoutes[0], focus: ['主问题', '关键判断', '阅读入口'] },
-        { audience: '已经知道这本书但没系统读过的人', route: curatedRoutes[1] || curatedRoutes[0], focus: ['结构推进', '方法动作', '回原书点位'] },
+        { audience: '已经知道这本书但没系统读过的人', route: curatedRoutes[1] || curatedRoutes[0], focus: ['结构推进', '方法动作', '关键点位'] },
       ]
       : [
         { audience: '先快速判断值不值得读的人', route: '先看总览、知识地图、阅读路线。', focus: ['主问题', '四层结构', '速读入口'] },
@@ -1257,17 +1821,17 @@ function buildSectionFallbackTexts(input, title) {
 
   return {
     toolDesc: '基于公开资料整理主题线索、适用边界和阅读入口，不伪装成完整原文解析。',
-    partTitle: `先用一个阅读切口进入 ${safeTitle}`,
-    partNav: '先看这部分为什么值得读，而不是假装已经掌握原书全部章节细节。',
+    partTitle: `先从一个阅读切口进入 ${safeTitle}`,
+    partNav: '先看这部分为什么值得读，再决定哪些人物、章节或争议值得细看。',
     partTask: '把公开资料里较稳定的主题线索压成一个可进入的阅读模块。',
-    partPosition: '它帮助读者先建立理解框架，再决定是否回到原书深读。',
+    partPosition: '它帮助读者先建立理解框架，再决定是否沿着关键段落继续细看。',
     methodCategory: '阅读框架',
     methodTitle: '先确认公开线索能支撑什么',
     methodDesc: '在没有原文时，先分清哪些判断来自公开资料，哪些只是高概率推断。',
     quotePrefix: '关键判断：',
     debateTitle: '公开资料能帮助进入这本书，但不能替代原书细读',
     debateValue: `读 ${safeTitle} 时，公开线索足够帮助判断主题、价值和入口。`,
-    debateReservation: '但很多章节推进、论证顺序和语气细节，仍需要回到原书确认。',
+    debateReservation: '但很多章节推进、论证顺序和语气细节，仍要顺着原书里的关键段落去看。',
     routeAudience: '还没读原书、先判断值不值得读的人',
     route: '先看总览、争议和阅读路线，再决定要不要回原书补正文。',
     routeFocus: ['主题入口', '适用边界', '误读风险'],
@@ -1321,8 +1885,8 @@ function buildFallbackQuotes(input, title) {
   }
 
   return [
-    { quote: `关键判断：${safeTitle} 更适合先建立阅读入口，而不是直接替代原书精读。`, note: 'catalog 模式下把 quote 统一处理成关键判断，避免伪原句。' },
-    { quote: '关键判断：公开资料足够帮助判断主题，但不足以替代章节级理解。', note: '把来源保守性明确写出来，比假装完整更可信。' },
+    { quote: `关键判断：${safeTitle} 更适合先建立阅读入口，而不是直接替代原书精读。`, note: '先拿它校准主问题和读法，再决定哪些段落值得深看。' },
+    { quote: '关键判断：公开资料足够帮助判断主题，但不足以替代章节级理解。', note: '保留来源边界，反而能让这张地图更可信。' },
     { quote: '关键判断：先看这本书解决什么问题，再决定要不要读它的全部细节。', note: '这是书名搜索路径下最稳定的阅读入口。' },
     { quote: '关键判断：争议、边界和误读风险，往往比一句漂亮金句更值得先看。', note: '帮助读者避免把一本书消费成单向口号。' },
   ];
@@ -1371,8 +1935,8 @@ function buildFallbackRoutes(input, title) {
   }
 
   return [
-    { audience: '先判断值不值得读的人', route: `先看 ${safeTitle} 的总览、争议和 routes，再决定是否回原书。`, focus: ['主题入口', '争议边界', '阅读价值'] },
-    { audience: '已经听过这本书但没读过原书的人', route: '先看 knowledgeMap 和 debates，建立阅读框架后再去找原书章节。', focus: ['阅读框架', '误读风险', '回原书点位'] },
+    { audience: '先判断值不值得读的人', route: `先看 ${safeTitle} 的总览、争议和路线，再决定要不要继续细看。`, focus: ['主题入口', '争议边界', '阅读价值'] },
+    { audience: '已经听过这本书但没读过原书的人', route: '先看知识地图和争议，再顺着人物、章节或关键转折去补正文。', focus: ['阅读框架', '误读风险', '关键点位'] },
     { audience: '想快速进入作者问题意识的人', route: '先抓 oneLiner、about 和 parts，再顺着 routes 决定下一步是速读还是精读。', focus: ['主问题', '理解切口', '下一步读法'] },
   ];
 }
@@ -1392,7 +1956,7 @@ function buildFallbackTimeline(input, title) {
     { year: '入口', title: '先确认主题线索', desc: `先看公开资料如何描述 ${safeTitle} 的核心问题。` },
     { year: '结构', title: '再整理公开框架', desc: '把能确认的结构线索压成阅读模块，而不是伪造章节推进。' },
     { year: '边界', title: '随后识别争议与误读', desc: '先知道这本书容易被过度简化的地方。' },
-    { year: '回原书', title: '最后决定是否深读', desc: '阅读地图帮助判断入口，但最终仍要靠原书验证。' },
+    { year: '深读', title: '最后决定是否深读', desc: '阅读地图帮助判断入口，接下来再沿着关键人物、转折或段落细看。' },
   ];
 }
 
@@ -1446,11 +2010,15 @@ function normalizeGeneratedMap(raw, input) {
           return {
             ...(useFallbackCard ? fallbackCard : card),
             layer: overviewOrdinals[index],
-            title: useFallbackCard ? fallbackCard.title : title,
+            title: sanitizeCatalogVisibleText(useFallbackCard ? fallbackCard.title : title, fallbackCard.title),
             desc: useFallbackCard ? fallbackCard.desc : desc,
             points: Array.isArray(card?.points) && card.points.length >= 3
-              ? card.points.map((item) => trimText(item)).filter(Boolean).slice(0, 3)
-              : fallbackCard.points,
+              ? uniqueTrimmedList(card.points.map((item) => sanitizeCatalogVisibleText(item)).filter(Boolean), 3)
+              : (
+                  getSourceStrategy(input) === 'catalog'
+                    ? buildCatalogOverviewPoints(title || fallbackCard.title, index)
+                    : fallbackCard.points
+                ),
             color: trimText(card?.color) || fallbackCard.color,
           };
         }),
@@ -1555,7 +2123,7 @@ function normalizeGeneratedMap(raw, input) {
           quoteMode = 'judgment-based';
           return {
             quote: quote.startsWith(fallbackTexts.quotePrefix) ? quote : `${fallbackTexts.quotePrefix}${quote.replace(/^["“”'']+|["“”'']+$/g, '')}`,
-            note: note || '基于公开线索提炼的关键判断，不代表原书逐字引文。',
+            note: sanitizeCatalogVisibleText(note, buildCatalogQuoteNote(index)),
           };
         }
         return {
@@ -1657,7 +2225,7 @@ function normalizeGeneratedMap(raw, input) {
   }
 
   const dedupedFallbackSections = [...new Set(fallbackSections)];
-  return {
+  return applyCatalogQualityFloor({
     ...fallback,
     ...raw,
     overview: normalizedOverview,
@@ -1682,7 +2250,7 @@ function normalizeGeneratedMap(raw, input) {
         ? raw?.sourceMeta?.summary || fallback.sourceMeta.summary
         : buildFallbackSummary(input, dedupedFallbackSections, quoteMode),
     },
-  };
+  }, input);
 }
 
 function buildEnrichmentPrompt(input, groundingContext, analysisBrief, currentMap) {
@@ -2034,6 +2602,7 @@ ${issues.map((item, index) => `${index + 1}. ${item}`).join('\n')}
 - routes 保持 3 到 4 条，focus 每条至少 2 个点。
 - debates 每条都要写清“为什么今天仍值得带走”和“为什么还要保留看”。
 - catalog 的 routes 要更像“如何读这本书”；upload 的 routes 要更像“如何按正文结构读这本书”。
+- 禁止输出这些词：catalog 模式、prototype fallback、partial fallback、seed、prompt、quote 统一处理、回原书确认。
 
 书名：${input.title}
 作者：${input.author || 'Unknown'}
@@ -2052,7 +2621,7 @@ ${JSON.stringify(currentMap).slice(0, 14000)}
   `.trim();
 }
 
-async function polishMapQuality(input, groundingContext, analysisBrief, currentMap) {
+async function polishMapQuality(input, groundingContext, analysisBrief, currentMap, timeoutMs = SECTION_STAGE_TIMEOUT_MS) {
   const issues = collectQualityIssues(currentMap, input);
   const possibleNoise = [
     ...(currentMap?.timeline || []).map((item) => `${item?.title || ''} ${item?.desc || ''}`),
@@ -2072,6 +2641,7 @@ async function polishMapQuality(input, groundingContext, analysisBrief, currentM
       temperature: 0.2,
       model: SILICONFLOW_POLISH_MODEL,
       responseFormat: 'json_object',
+      timeoutMs,
     });
 
     return removeOffTopicItems({
@@ -3136,6 +3706,33 @@ function buildCompactGroundingDossier(results) {
     .join('\n');
 }
 
+function buildCompactMetadataGrounding(googleItems = []) {
+  const seen = new Set();
+
+  return googleItems
+    .flatMap((item) => {
+      const volumeInfo = item?.volumeInfo || {};
+      const description = trimText(volumeInfo.description).replace(/\s+/g, ' ').slice(0, 160);
+      const categories = Array.isArray(volumeInfo.categories) ? volumeInfo.categories.join(' / ').slice(0, 80) : '';
+      const snippets = [
+        description,
+        categories,
+      ].filter((entry) => entry && entry.length >= 12);
+      return snippets.map((entry) => sanitizeCatalogVisibleText(entry));
+    })
+    .filter((entry) => {
+      const key = normalize(entry);
+      if (!key || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 3)
+    .map((entry, index) => `${index + 1}. ${entry}`)
+    .join('\n');
+}
+
 function extractHeadingHints(text) {
   const seen = new Set();
   return String(text || '')
@@ -3275,54 +3872,108 @@ function buildUploadLocalCompactSeed(input, compressedContent = '') {
   };
 }
 
-function extractCatalogGroundingHints(groundingContext) {
+function extractCatalogGroundingHints(groundingContext, input = {}) {
+  const seen = new Set();
+  const titleKeywords = extractGroundingKeywords(input?.title || '').map((item) => normalize(item)).filter(Boolean);
+  const authorKeywords = extractGroundingKeywords(input?.author || '').map((item) => normalize(item)).filter(Boolean);
+  const fullTitleKey = normalize(input?.title || '');
+  const fullAuthorKey = normalize(input?.author || '');
+  const metadataPattern = /(author|publisher|isbn|edition|copyright|pages?|paperback|hardcover|published|first published|university press|press|首次出版|出版于|出版社|编著|译者|页数|装帧|副教授|豆瓣|评分|精装|平装)/i;
+  const narrativeSignalPattern = /(离开|遇见|进入|回到|建立|瓦解|推动|解释|分析|展示|强调|揭示|围绕|如何|为什么|follows|traces|argues|examines|explores|shows|describes|develops|tension|conflict|journey|river|habit|government|finance|growth)/i;
+
   return String(groundingContext || '')
     .split('\n')
-    .map((line) => trimText(line.replace(/^\d+\.\s*/, '').replace(/^摘要[:：]\s*/, '')))
-    .filter((line) => line.length >= 8 && line.length <= 48)
-    .slice(0, 6);
+    .flatMap((line) => splitSentences(line).flatMap((sentence) => sentence.split(/[，,；;、]/)))
+    .map((line) => sanitizeCatalogVisibleText(
+      line
+        .replace(/^\d+\.\s*/, '')
+        .replace(/^摘要[:：]\s*/, '')
+        .replace(/^URL[:：].*$/i, '')
+        .replace(/^来源线索[:：]\s*/, '')
+        .replace(/^候选原句.*$/i, ''),
+    ))
+    .filter((line) => line.length >= 6 && line.length <= 32)
+    .filter((line) => {
+      const normalized = normalize(line);
+      const looksLikeTitleOnly =
+        normalized === fullTitleKey ||
+        titleKeywords.some((keyword) => normalized === keyword || normalized === `${keyword}.` || normalized.startsWith(`${keyword}.`));
+      const looksLikeAuthorOnly =
+        normalized === fullAuthorKey ||
+        authorKeywords.some((keyword) => normalized === keyword || normalized === `${keyword}.`);
+      const metadataLike = metadataPattern.test(line);
+      const hasNarrativeSignal = narrativeSignalPattern.test(line);
+      const looksNumeric = /^[0-9xX-]{6,}$/.test(line.replace(/\s+/g, ''));
+      const looksLikeLabel = /^(title|author|publisher|isbn)$/i.test(line);
+      return !looksLikeTitleOnly && !looksLikeAuthorOnly && !looksNumeric && !looksLikeLabel && !(metadataLike && !hasNarrativeSignal);
+    })
+    .filter((line) => {
+      const key = normalize(line);
+      if (!key || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 8);
 }
 
 function buildGenericCatalogCompactSeed(input, groundingContext = '') {
   const safeTitle = trimText(input?.title) || '这本书';
   const safeAuthor = trimText(input?.author);
-  const groundingHints = extractCatalogGroundingHints(groundingContext);
+  const groundingHints = extractCatalogGroundingHints(groundingContext, input);
   const titleKeywords = extractGroundingKeywords(safeTitle).slice(0, 3);
   const firstKeyword = titleKeywords[0] || '主问题';
   const secondKeyword = titleKeywords[1] || '关键判断';
-  const primaryHint = groundingHints[0] || `${safeTitle} 的核心命题`;
-  const secondaryHint = groundingHints[1] || `${safeTitle} 的主要分歧`;
+  const clueLines = uniqueTrimmedList(groundingHints, 4);
+  const overviewFallback = [
+    `先看${firstKeyword}到底在处理什么`,
+    `再看${secondKeyword}如何把问题推深`,
+    `把${firstKeyword}放回真实代价`,
+    '最后决定这本书该怎么读',
+  ];
+  const partsFallback = [
+    `先确认${firstKeyword}的主问题`,
+    `再看${secondKeyword}怎样展开`,
+    '把关键转折和代价放回同一条线',
+    '最后看作者把判断收束到哪里',
+  ];
+  const overview = uniqueTrimmedList(clueLines.map((line, index) => {
+    if (index === 0) {
+      return line.startsWith('先') ? line : `先看${extractCatalogFocus(line, firstKeyword)}`;
+    }
+    if (index === 1) {
+      return line.startsWith('再') ? line : `再看${extractCatalogFocus(line, secondKeyword)}`;
+    }
+    if (index === 2) {
+      return line.startsWith('把') ? line : `把${extractCatalogFocus(line, firstKeyword)}放回转折里`;
+    }
+    return line.startsWith('最后') ? line : `最后看${extractCatalogFocus(line, '全书落点')}`;
+  }).concat(overviewFallback), 4);
+  const parts = uniqueTrimmedList(clueLines.concat(partsFallback), 4);
+  const focusA = extractCatalogFocus(parts[0] || firstKeyword, firstKeyword);
+  const focusB = extractCatalogFocus(parts[1] || secondKeyword, secondKeyword);
 
   return {
-    oneLiner: `${safeTitle} 先看${firstKeyword}`,
+    oneLiner: sanitizeCatalogVisibleText(`别急着找结论，先看${focusA}`),
     about: safeAuthor
-      ? `${safeAuthor} 这本书更适合先抓主题、判断和读法。`
-      : `${safeTitle} 更适合先抓主题、判断和读法。`,
-    overview: [
-      `先看${firstKeyword}到底在处理什么`,
-      `再看${secondKeyword}如何组织判断`,
-      primaryHint.slice(0, 18),
-      secondaryHint.slice(0, 18),
-    ],
-    parts: [
-      `先确认${firstKeyword}的主问题`,
-      `再看${secondKeyword}怎样展开`,
-      '把关键判断放回适用边界',
-      '最后决定这本书该怎么读',
-    ],
+      ? `${safeAuthor} 这本书更适合先抓主题、转折和读法，再决定是否深读。`
+      : `${safeTitle} 更适合先抓主题、转折和读法，再决定是否深读。`,
+    overview,
+    parts,
     methods: [
-      '先区分主题和结论',
-      '把阅读入口压成四步',
-      '先找边界再记观点',
-      '回原书核对关键判断',
+      `先分清${focusA}不是结论而是入口`,
+      `用${focusB}判断作者怎样推进`,
+      '先看转折和代价，再记观点',
+      '把人物、结构和边界连起来看',
     ],
     quotes: [
       `关键判断：${safeTitle} 更适合先建立阅读入口，而不是直接消费成一句结论。`,
       '关键判断：主题、边界和读法，往往比一句漂亮金句更值得先看。',
     ],
     routes: [
-      '先看主问题和判断框架，再决定是否深读。',
-      '先看争议与边界，再回到最关键的章节和段落。',
+      `先看${focusA}和${focusB}，再决定是否继续深读。`,
+      '先看争议与边界，再沿着关键人物、转折或章节细看。',
     ],
   };
 }
@@ -3651,17 +4302,35 @@ async function buildGroundingContext(input) {
 async function buildCompactGroundingContext(input, timeoutMs = COMPACT_GROUNDING_TIMEOUT_MS) {
   const query = [input.title, input.author].filter(Boolean).join(' ');
   if (!query || !TAVILY_API_KEY || timeoutMs < 1200) {
-    return '';
+    if (!query) {
+      return '';
+    }
+    try {
+      const googleResults = await searchGoogleBooks(query, 2, Math.max(1200, Math.min(timeoutMs, 2800)));
+      return buildCompactMetadataGrounding(googleResults);
+    } catch {
+      return '';
+    }
   }
 
   try {
-    const results = await searchTavily(`${query} 这本书讲什么 核心观点 适用边界`, {
-      searchDepth: 'basic',
-      maxResults: 3,
-      timeoutMs,
-    });
-    const filtered = results.filter((item) => isRelevantGroundingResult(item, query));
-    return filtered.length ? buildCompactGroundingDossier(filtered) : '';
+    const [coreResults, structureResults, googleResults] = await Promise.all([
+      searchTavily(`${query} 这本书讲什么 核心观点 关键论点`, {
+        searchDepth: 'basic',
+        maxResults: 3,
+        timeoutMs,
+      }).catch(() => []),
+      searchTavily(`${query} 章节 梗概 人物 关键转折 summary themes characters`, {
+        searchDepth: 'basic',
+        maxResults: 3,
+        timeoutMs,
+      }).catch(() => []),
+      searchGoogleBooks(query, 2, Math.max(1200, Math.min(timeoutMs, 2800))).catch(() => []),
+    ]);
+    const filtered = mergeTavilyResults([coreResults, structureResults]).filter((item) => isRelevantGroundingResult(item, query));
+    const tavilyBlock = filtered.length ? buildCompactGroundingDossier(filtered) : '';
+    const metadataBlock = buildCompactMetadataGrounding(googleResults);
+    return [tavilyBlock, metadataBlock].filter(Boolean).join('\n');
   } catch (error) {
     const errorType = classifyError(error, { source: 'tavily' });
     addDegradedDependency('tavily');
@@ -3837,9 +4506,90 @@ ${groundingContext ? `grounding：${groundingContext}` : 'grounding：无'}
 要求：
 - overview 恰好 4 条，用来概括四个阅读判断
 - parts 恰好 4 条，必须像阅读模块名，不要写“问题定义/结构展开”
-- methods 恰好 4 条，写成动作短句
+- methods 恰好 4 条，写成动作短句，而且像真正可迁移的判断动作
 - quotes 恰好 2 条，必须以“关键判断：”开头
 - routes 恰好 2 条，只写如何进入这本书
+- 如果 grounding 提到了人物、地点、阶段、关系或关键转折，优先把这些稳定线索写进 overview 和 parts。
+- parts 尽量沿着这本书的真实推进线，不要给四个并列抽象词。
+- oneLiner 必须是具体判断，不要写“这是一本关于……”。
+- 同一句话不要在 title、parts、methods、routes 里重复出现。
+- 禁止输出这些词：catalog 模式、prototype fallback、partial fallback、seed、prompt、quote 统一处理、回原书确认。
+  `.trim();
+}
+
+function buildCatalogSectionCompletionPrompt(input, groundingContext, currentMap) {
+  return `
+只返回合法 JSON，不要解释，不要 markdown。
+你现在只负责把一张 catalog 阅读地图从 compact 密度补到 full-density 下限。
+不要重写整张图，只补这些字段：
+- knowledgeMap
+- methods
+- timeline
+- debates
+- routes
+
+硬性要求：
+- parts、overview 已经存在，把它们当成既有骨架，不要改写。
+- knowledgeMap.areas 输出 4 到 5 条。
+- knowledgeMap.tools 输出 4 到 5 条，每条都要像“这本书里真正有用的观察工具”。
+- methods.items 输出 10 到 14 条，必须是可迁移动作，不要只是概念名。
+- timeline 输出 4 到 5 条，必须沿着这本书的推进线、阶段线或人物关系变化线来写。
+- debates 输出 2 到 3 条，必须写清误读风险、边界或保留看。
+- routes 输出 3 条，面向不同读者，但都要回答“如何进入这本书”。
+- 如果 parts 里已经出现人物、地点、关系、阶段或关键转折，优先把这些稳定线索分散写进 knowledgeMap、timeline、debates、routes。
+- 禁止输出这些词：catalog 模式、prototype fallback、partial fallback、seed、prompt、quote 统一处理、回原书确认。
+
+来源策略：
+${buildPromptStrategyNotes(input, 'structure')}
+
+书名：${input.title}
+作者：${input.author || 'Unknown'}
+来源模式：${input.sourceKind}
+
+${editorialStyleGuide}
+${benchmarkDensityGuide}
+
+补充线索：
+${groundingContext || '无'}
+
+当前阅读地图骨架：
+${JSON.stringify({
+  title: currentMap?.title,
+  author: currentMap?.author,
+  oneLiner: currentMap?.oneLiner,
+  about: currentMap?.about,
+  overview: currentMap?.overview,
+  parts: currentMap?.parts,
+  methods: currentMap?.methods,
+  routes: currentMap?.routes,
+}, null, 2).slice(0, 14000)}
+
+返回 JSON：
+{
+  "knowledgeMap": {
+    "areas": [
+      { "title": "领域", "status": "状态", "progress": 80, "color": "bg-orange-500", "desc": "描述" }
+    ],
+    "tools": [
+      { "title": "工具", "desc": "描述", "points": ["点1", "点2", "点3"] }
+    ]
+  },
+  "methods": {
+    "categories": ["分类1", "分类2", "分类3"],
+    "items": [
+      { "id": "01", "category": "分类1", "title": "方法名", "desc": "方法描述" }
+    ]
+  },
+  "timeline": [
+    { "year": "阶段", "title": "标题", "desc": "描述" }
+  ],
+  "debates": [
+    { "title": "争议点", "value": "值得带走", "reservation": "需要保留看" }
+  ],
+  "routes": [
+    { "audience": "读者类型", "route": "阅读路线", "focus": ["重点1", "重点2"] }
+  ]
+}
   `.trim();
 }
 
@@ -3872,6 +4622,47 @@ ${groundingContext ? `辅助 grounding：${groundingContext}` : '辅助 groundin
 - quotes 1 条，优先写“关键判断：...”
 - routes 1 条，只写按正文进入的读法
   `.trim();
+}
+
+function mergeCatalogSectionCompletion(currentMap, completion) {
+  if (!completion || typeof completion !== 'object') {
+    return currentMap;
+  }
+
+  return {
+    ...currentMap,
+    knowledgeMap: completion?.knowledgeMap?.areas?.length >= 4 && completion?.knowledgeMap?.tools?.length >= 4
+      ? completion.knowledgeMap
+      : currentMap.knowledgeMap,
+    methods: completion?.methods?.items?.length >= 4
+      ? completion.methods
+      : currentMap.methods,
+    timeline: Array.isArray(completion?.timeline) && completion.timeline.length >= 4
+      ? completion.timeline
+      : currentMap.timeline,
+    debates: Array.isArray(completion?.debates) && completion.debates.length >= 2
+      ? completion.debates
+      : currentMap.debates,
+    routes: Array.isArray(completion?.routes) && completion.routes.length >= 3
+      ? completion.routes
+      : currentMap.routes,
+  };
+}
+
+async function completeCatalogSectionsLight(input, groundingContext, currentMap, timeoutMs) {
+  try {
+    const completion = await callSiliconFlow({
+      prompt: buildCatalogSectionCompletionPrompt(input, groundingContext, currentMap),
+      maxTokens: 1800,
+      temperature: 0.2,
+      model: SILICONFLOW_POLISH_MODEL,
+      responseFormat: 'json_object',
+      timeoutMs,
+    });
+    return mergeCatalogSectionCompletion(currentMap, completion);
+  } catch (_error) {
+    return currentMap;
+  }
 }
 
 function inflateCompactReadingMapSeed(seed, input) {
@@ -3923,11 +4714,15 @@ function inflateCompactReadingMapSeed(seed, input) {
         desc: trimText(typeof item === 'string' ? '' : item?.desc) || fallback.overview.cards[index]?.desc,
         points: Array.isArray(typeof item === 'string' ? null : item?.points) && item.points.length >= 3
           ? item.points.map((point) => trimText(point)).filter(Boolean).slice(0, 3)
-          : [
-              trimText(typeof item === 'string' ? item : item?.title) || fallback.overview.cards[index]?.points?.[0],
-              trimText(typeof item === 'string' ? item : item?.desc).slice(0, 16) || fallback.overview.cards[index]?.points?.[1],
-              input.sourceKind === 'upload' ? '回原文核对' : '回原书确认',
-            ].filter(Boolean).slice(0, 3),
+          : (
+              input.sourceKind === 'catalog'
+                ? buildCatalogOverviewPoints(trimText(typeof item === 'string' ? item : item?.title) || fallback.overview.cards[index]?.title, index)
+                : [
+                    trimText(typeof item === 'string' ? item : item?.title) || fallback.overview.cards[index]?.points?.[0],
+                    trimText(typeof item === 'string' ? item : item?.desc).slice(0, 16) || fallback.overview.cards[index]?.points?.[1],
+                    '回原文核对',
+                  ].filter(Boolean).slice(0, 3)
+            ),
         color: overviewColors[index],
       })),
     },
@@ -3935,31 +4730,33 @@ function inflateCompactReadingMapSeed(seed, input) {
     parts: parts.map((item, index) => {
       const title = trimText(typeof item === 'string' ? item : item?.title) || fallback.parts[index]?.title;
       const desc = trimText(typeof item === 'string' ? '' : item?.desc);
-      const navDesc = trimText(typeof item === 'string' ? '' : item?.navDesc) || desc || `${title} 是进入这本书的一段核心阅读模块。`;
-      const task = trimText(typeof item === 'string' ? '' : item?.task) || desc || `先用“${title}”判断这一部分值得读什么。`;
+      const catalogToolkit = input.sourceKind === 'catalog' ? buildCatalogPartToolkit(title, index) : null;
+      const navDesc = trimText(typeof item === 'string' ? '' : item?.navDesc) || desc || catalogToolkit?.navDesc || `${title} 是进入这本书的一段核心阅读模块。`;
+      const task = trimText(typeof item === 'string' ? '' : item?.task) || desc || catalogToolkit?.task || `先用“${title}”判断这一部分值得读什么。`;
       const takeaways = Array.isArray(typeof item === 'string' ? null : item?.takeaways) ? item.takeaways.map((entry) => trimText(entry)).filter(Boolean).slice(0, 3) : [];
       const chapters = Array.isArray(typeof item === 'string' ? null : item?.chapters) ? item.chapters.map((entry) => trimText(entry)).filter(Boolean).slice(0, 3) : [];
       const derivedTakeaways = [
+        ...(catalogToolkit?.takeaways || []),
         navDesc,
         task,
-        input.sourceKind === 'upload' ? '回到正文验证这一段的推进动作。' : '回到原书确认这一部分的真实展开。',
+        input.sourceKind === 'upload' ? '回到正文验证这一段的推进动作。' : '',
       ].filter(Boolean).slice(0, 3);
       const derivedChapters = [
+        ...(catalogToolkit?.chapters || []),
         title,
         navDesc.slice(0, 14),
-        task.slice(0, 14),
       ].filter(Boolean).slice(0, 3);
       return {
         id: `part-${index + 1}`,
         title,
         subtitle: partSubtitles[index],
         navDesc,
-        intro: trimText(item?.intro) || `${navDesc} ${task}`.slice(0, 90) || fallback.parts[index]?.intro,
-        tags: [title, derivedTakeaways[0], derivedChapters[0]].filter(Boolean).slice(0, 3),
+        intro: trimText(item?.intro) || catalogToolkit?.intro || `${navDesc} ${task}`.slice(0, 90) || fallback.parts[index]?.intro,
+        tags: uniqueTrimmedList((catalogToolkit?.tags || []).concat([title, derivedTakeaways[0], derivedChapters[0]]), 3),
         task,
         takeaways: takeaways.length >= 3 ? takeaways : derivedTakeaways,
         chapters: chapters.length >= 3 ? chapters : derivedChapters,
-        position: trimText(item?.position) || `${title} 帮助读者把这一段放回整本书的推进链里。`,
+        position: trimText(item?.position) || catalogToolkit?.position || `${title} 帮助读者把这一段放回整本书的推进链里。`,
       };
     }),
     methods: {
@@ -3968,7 +4765,11 @@ function inflateCompactReadingMapSeed(seed, input) {
         id: String(index + 1).padStart(2, '0'),
         category: trimText(typeof item === 'string' ? '' : item?.category) || methodCategories[0] || defaultMethodCategories[index % defaultMethodCategories.length],
         title: trimText(typeof item === 'string' ? item : item?.title) || fallback.methods.items[index]?.title,
-        desc: trimText(typeof item === 'string' ? '' : item?.desc) || `把“${trimText(typeof item === 'string' ? item : item?.title) || fallback.methods.items[index]?.title}”当作进入这本书的一步动作。`,
+        desc: trimText(typeof item === 'string' ? '' : item?.desc) || (
+          input.sourceKind === 'catalog'
+            ? buildCatalogMethodDescription(trimText(typeof item === 'string' ? item : item?.title) || fallback.methods.items[index]?.title, index)
+            : `把“${trimText(typeof item === 'string' ? item : item?.title) || fallback.methods.items[index]?.title}”当作进入这本书的一步动作。`
+        ),
       })),
     },
     timeline: fallbackTimeline,
@@ -3979,7 +4780,7 @@ function inflateCompactReadingMapSeed(seed, input) {
           quote: trimText(item) || fallbackQuote?.quote,
           note: input.sourceKind === 'upload'
             ? '基于压缩正文提炼的关键判断。'
-            : '基于书名与公开线索提炼的关键判断。',
+            : buildCatalogQuoteNote(index),
         };
       }
       return {
@@ -4118,6 +4919,8 @@ function buildStructurePrompt(input, groundingContext, analysisBrief) {
 - 每一条方法卡都要可操作，不能只是观点标题。
 - parts 的 navDesc、task、position 要有“为什么值得读这一部分”的阅读感。
 - parts.subtitle 固定写“第一部分 / 第二部分 ...”，不要把判断句写进 subtitle。
+- 如果补充线索里已经出现人物、地点、关系、阶段或关键转折，优先把这些稳定线索写进 parts、timeline 和 routes。
+- 禁止输出这些词：catalog 模式、prototype fallback、partial fallback、seed、prompt、quote 统一处理、回原书确认。
 
 书名：${input.title}
 作者：${input.author || 'Unknown'}
@@ -4604,6 +5407,7 @@ app.post('/api/generate-map', async (request, response) => {
   }
 
   try {
+    const generationStartedAt = Date.now();
     const deadline = Date.now() + getGenerationBudgetMs(input);
     const sourcePreparation = stageTracker.runSync('search_or_source_parse', () => {
       const groundingTimeoutMs = capStageTimeout(deadline, COMPACT_GROUNDING_TIMEOUT_MS, 1200);
@@ -4672,6 +5476,7 @@ app.post('/api/generate-map', async (request, response) => {
         ? stabilizeCatalogCompactSeed(parsedSeed, input, groundingContext)
         : parsedSeed
     ));
+    const hasCuratedCatalogSeed = input.sourceKind === 'catalog' && Boolean(findBestCatalogSeed(input.title));
     if (seedRepairRecovery) {
       appendRequestLogMeta({
         seedRepairStrategy,
@@ -4683,8 +5488,34 @@ app.post('/api/generate-map', async (request, response) => {
         ...generateMeta,
       });
     }
-    const raw = stageTracker.runSync('inflate', () => inflateCompactReadingMapSeed(seed, input));
-    const map = stageTracker.runSync('normalize', () => normalizeGeneratedMap(raw, input));
+    let raw = stageTracker.runSync('inflate', () => inflateCompactReadingMapSeed(seed, input));
+    const lightEnrichTimeoutMs = capStageTimeout(deadline, 9000, 0);
+    const elapsedBeforeLightEnrichMs = Date.now() - generationStartedAt;
+    if (
+      input.sourceKind === 'catalog' &&
+      lightEnrichTimeoutMs &&
+      elapsedBeforeLightEnrichMs < 36000 &&
+      needsCatalogLightEnrich(raw, input, groundingContext)
+    ) {
+      raw = await stageTracker.run('catalog_light_enrich', async () => (
+        completeCatalogSectionsLight(input, groundingContext, raw, lightEnrichTimeoutMs)
+      ));
+    }
+    let map = stageTracker.runSync('normalize', () => normalizeGeneratedMap(raw, input));
+    const qualityFloorTimeoutMs = capStageTimeout(deadline, SPARSE_STAGE_TIMEOUT_MS, 0);
+    if (input.sourceKind === 'catalog' && !hasCuratedCatalogSeed && qualityFloorTimeoutMs) {
+      const enrichedMap = await stageTracker.run('quality_floor_enrichment', async () => (
+        enrichSparseMap(input, groundingContext, '', map, qualityFloorTimeoutMs)
+      ));
+      map = stageTracker.runSync('quality_floor_normalize', () => normalizeGeneratedMap(enrichedMap, input));
+    }
+    const polishTimeoutMs = capStageTimeout(deadline, SECTION_STAGE_TIMEOUT_MS, 0);
+    if (input.sourceKind === 'catalog' && !hasCuratedCatalogSeed && polishTimeoutMs) {
+      const polishedMap = await stageTracker.run('quality_floor_polish', async () => (
+        polishMapQuality(input, groundingContext, '', map, polishTimeoutMs)
+      ));
+      map = stageTracker.runSync('quality_floor_finalize', () => normalizeGeneratedMap(polishedMap, input));
+    }
     const coverLookupTimeoutMs = capStageTimeout(deadline, COVER_LOOKUP_TIMEOUT_MS, 1000);
     map.cover = await stageTracker.run('cover_lookup', async () => (
       coverLookupTimeoutMs

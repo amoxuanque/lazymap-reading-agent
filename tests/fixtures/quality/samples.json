@@ -1,5 +1,19 @@
 [
   {
+    "sampleId": "catalog-siddhartha",
+    "kind": "generate",
+    "sourceKind": "catalog",
+    "title": "Siddhartha",
+    "author": "Hermann Hesse",
+    "expectedMode": "environment-dependent",
+    "focus": [
+      "人物、阶段与关键转折是否真正进入地图",
+      "不能退化成空骨架和重复模板句",
+      "quotes / parts / routes 不应暴露内部口径",
+      "knowledgeMap / methods / timeline 是否达到 full-density 下限"
+    ]
+  },
+  {
     "sampleId": "catalog-atomic-habits",
     "kind": "generate",
     "sourceKind": "catalog",

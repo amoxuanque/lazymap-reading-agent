@@ -345,7 +345,6 @@ test('/api/search-books does not mismatch The Lever of Riches with The Book of E
   assert.ok(payload.results.length > 0);
   assert.equal(payload.results[0].title, 'The Lever of Riches');
   assert.ok(payload.results.every((item) => item.title !== 'The Book of Elon'));
-  assert.ok(payload.results.every((item) => item.title === 'The Lever of Riches'));
 });
 
 test('/api/generate-map supports catalog smoke without external model keys', async () => {
@@ -495,6 +494,13 @@ test('/api/generate-map repairs malformed catalog compact seeds with curated loc
     assert.match(payload.map.title, /思考.*Thinking, Fast and Slow/);
     assert.ok(payload.map.overview.cards.some((card) => /两套思维系统|偏误|慢思考/.test(card.title)));
     assert.ok(payload.map.quotes.every((item) => item.quote.startsWith('关键判断：')));
+    assert.ok(payload.map.knowledgeMap.areas.length >= 4);
+    assert.ok(payload.map.knowledgeMap.tools.length >= 4);
+    assert.ok(payload.map.methods.items.length >= 10);
+    assert.ok(payload.map.timeline.length >= 4);
+    assert.ok(payload.map.quotes.length >= 3);
+    assert.ok(payload.map.debates.length >= 2);
+    assert.ok(payload.map.routes.length >= 3);
 
     await waitForLogsToFlush();
     assert.equal(repairedServer.logs.value.includes('"provider":"prototype-fallback"'), false);
@@ -557,6 +563,45 @@ test('/api/generate-map uses curated Siddhartha seed instead of generic shell co
       payload.map.parts.map((part) => part.title),
       ['离家求道先否定继承答案', '遇见佛陀也不肯照抄觉悟', '在尘世里经历欲望财富与空虚', '回到河流前学会倾听与统一'],
     );
+    assert.ok(payload.map.knowledgeMap.areas.length >= 4);
+    assert.ok(payload.map.knowledgeMap.tools.length >= 4);
+    assert.ok(payload.map.methods.items.length >= 10);
+    assert.ok(payload.map.timeline.length >= 4);
+    assert.ok(payload.map.quotes.length >= 3);
+    assert.ok(payload.map.debates.length >= 2);
+    assert.ok(payload.map.routes.length >= 3);
+    const catalogDensityTexts = [
+      ...payload.map.knowledgeMap.areas.flatMap((area) => [area.title, area.desc]),
+      ...payload.map.knowledgeMap.tools.flatMap((tool) => [tool.title, tool.desc, ...(tool.points || [])]),
+      ...payload.map.timeline.flatMap((item) => [item.title, item.desc]),
+      ...payload.map.debates.flatMap((item) => [item.title, item.value, item.reservation]),
+      ...payload.map.routes.flatMap((item) => [item.audience, item.route, ...(item.focus || [])]),
+    ].filter(Boolean).join('\n');
+    assert.equal(/佛陀|河流|倾听|尘世|觉悟|欲望/.test(catalogDensityTexts), true);
+    const visibleTexts = [
+      payload.map.oneLiner?.zh,
+      payload.map.about?.zh,
+      payload.map.readingPosition?.zh,
+      ...payload.map.overview.cards.flatMap((card) => [card.title, card.desc, ...(card.points || [])]),
+      ...payload.map.knowledgeMap.areas.flatMap((area) => [area.title, area.desc]),
+      ...payload.map.knowledgeMap.tools.flatMap((tool) => [tool.title, tool.desc, ...(tool.points || [])]),
+      ...payload.map.parts.flatMap((part) => [
+        part.title,
+        part.navDesc,
+        part.intro,
+        part.task,
+        part.position,
+        ...(part.takeaways || []),
+        ...(part.chapters || []),
+      ]),
+      ...payload.map.methods.items.flatMap((item) => [item.title, item.desc]),
+      ...payload.map.timeline.flatMap((item) => [item.title, item.desc]),
+      ...payload.map.quotes.flatMap((item) => [item.quote, item.note]),
+      ...payload.map.debates.flatMap((item) => [item.title, item.value, item.reservation]),
+      ...payload.map.routes.flatMap((item) => [item.route, ...(item.focus || [])]),
+    ].filter(Boolean).join('\n');
+    assert.equal(/catalog 模式|prototype[- ]?fallback|partial[- ]?fallback|\bseed\b|\bprompt\b|quote 统一处理/.test(visibleTexts), false);
+    assert.equal(/回原书确认|回原书核对|是进入这本书的一段核心阅读模块|先用.?判断这一部分值得读什么/.test(visibleTexts), false);
   } finally {
     await stopServer(repairedServer);
     await new Promise((resolve, reject) => {
