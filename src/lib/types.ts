@@ -44,6 +44,11 @@ export interface KnowledgeTool {
   points: string[];
 }
 
+export interface SourceEvidence {
+  chapter: string;
+  excerpt: string;
+}
+
 export interface ReadingPart {
   id: string;
   title: string;
@@ -55,6 +60,7 @@ export interface ReadingPart {
   takeaways: string[];
   chapters: string[];
   position: string;
+  sourceEvidence?: SourceEvidence[];
 }
 
 export interface MethodItem {
@@ -62,6 +68,7 @@ export interface MethodItem {
   category: string;
   title: string;
   desc: string;
+  sourceEvidence?: SourceEvidence[];
 }
 
 export interface TimelineItem {
@@ -85,6 +92,7 @@ export interface ReadingRoute {
   audience: string;
   route: string;
   focus: string[];
+  sourceEvidence?: SourceEvidence[];
 }
 
 export interface ReadingMap extends SearchBook {

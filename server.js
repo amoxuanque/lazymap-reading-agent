@@ -20,7 +20,8 @@ const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY || process.env.GEMIN
 const SILICONFLOW_BASE_URL = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1';
 const SILICONFLOW_MODEL = process.env.SILICONFLOW_MODEL || 'Qwen/Qwen3-32B';
 const SILICONFLOW_POLISH_MODEL = process.env.SILICONFLOW_POLISH_MODEL || SILICONFLOW_MODEL;
-const SILICONFLOW_COMPACT_MODEL = process.env.SILICONFLOW_COMPACT_MODEL || 'Qwen/Qwen2.5-7B-Instruct';
+const SILICONFLOW_COMPACT_MODEL = process.env.SILICONFLOW_COMPACT_MODEL || 'Pro/Qwen/Qwen2.5-7B-Instruct';
+const SILICONFLOW_UPLOAD_MODEL = process.env.SILICONFLOW_UPLOAD_MODEL || SILICONFLOW_MODEL;
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
 const TAVILY_BASE_URL = process.env.TAVILY_BASE_URL || 'https://api.tavily.com/search';
 const GOOGLE_BOOKS_BASE_URL = process.env.GOOGLE_BOOKS_BASE_URL || 'https://www.googleapis.com/books/v1/volumes';
@@ -40,8 +41,8 @@ const COVER_LOOKUP_TIMEOUT_MS = Number(process.env.COVER_LOOKUP_TIMEOUT_MS || 25
 const MIN_STAGE_BUDGET_MS = Number(process.env.MIN_STAGE_BUDGET_MS || 1200);
 const COMPACT_GROUNDING_TIMEOUT_MS = Number(process.env.COMPACT_GROUNDING_TIMEOUT_MS || 3500);
 const CATALOG_COMPACT_TIMEOUT_MS = Number(process.env.CATALOG_COMPACT_TIMEOUT_MS || 24000);
-const UPLOAD_COMPACT_TIMEOUT_MS = Number(process.env.UPLOAD_COMPACT_TIMEOUT_MS || 35000);
-const UPLOAD_COMPRESSED_TEXT_MAX_CHARS = Number(process.env.UPLOAD_COMPRESSED_TEXT_MAX_CHARS || 12000);
+const UPLOAD_COMPACT_TIMEOUT_MS = Number(process.env.UPLOAD_COMPACT_TIMEOUT_MS || 34000);
+const UPLOAD_COMPRESSED_TEXT_MAX_CHARS = Number(process.env.UPLOAD_COMPRESSED_TEXT_MAX_CHARS || 9000);
 const ALLOW_PROTOTYPE_FALLBACK = process.env.ALLOW_PROTOTYPE_FALLBACK
   ? ['1', 'true', 'yes', 'on'].includes(String(process.env.ALLOW_PROTOTYPE_FALLBACK).toLowerCase())
   : NODE_ENV !== 'production';
@@ -2627,9 +2628,10 @@ function isWeakPartItem(part, input) {
 function isWeakQuoteItem(item, input) {
   const quote = trimText(item?.quote);
   const note = trimText(item?.note);
+  const groundedUploadQuote = getSourceStrategy(input) === 'upload' && isUploadQuoteGroundedInContent(quote, input?.content);
   const looksOriginalButUnsupported = getSourceStrategy(input) === 'catalog' && !quote.startsWith('关键判断：') && !/判断|入口|边界|误读/.test(quote);
   const uploadPseudoQuote = getSourceStrategy(input) === 'upload' && quote.includes('作者认为') && note.length < 16;
-  return !quote || quote.length < 8 || quote.length > 46 || quote.includes('关键句') || genericQuotePattern.test(quote) || note.length < 10 || looksOriginalButUnsupported || uploadPseudoQuote;
+  return !quote || quote.length < 8 || quote.length > (groundedUploadQuote ? 240 : 46) || quote.includes('关键句') || genericQuotePattern.test(quote) || note.length < 10 || looksOriginalButUnsupported || uploadPseudoQuote;
 }
 
 function isWeakRouteItem(item, input) {
@@ -4019,6 +4021,80 @@ function cleanUploadedBookText(text) {
   return lines.join('\n').trim();
 }
 
+function isUploadChapterHeading(line) {
+  const value = trimText(String(line || '').replace(/^#{1,6}\s*/, ''));
+  return Boolean(value) && value.length <= 120 && (
+    /^第[\d一二三四五六七八九十百千万零〇两]+[章节部卷篇回](?:\s|[：:、.．—-]|$)/.test(value) ||
+    /^(?:chapter|part|book|section)\s+(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i.test(value) ||
+    /^#{1,6}\s+\S/.test(String(line || ''))
+  );
+}
+
+function splitUploadIntoChapters(text) {
+  const cleaned = cleanUploadedBookText(text);
+  const lines = cleaned.split('\n');
+  const sections = [];
+  let current = null;
+
+  const flush = () => {
+    if (!current) return;
+    const body = current.lines.join('\n').trim();
+    if (body.length >= 120) {
+      sections.push({ index: sections.length, title: current.title, body });
+    }
+  };
+
+  lines.forEach((line, lineIndex) => {
+    if (isUploadChapterHeading(line)) {
+      flush();
+      let title = trimText(line.replace(/^#{1,6}\s*/, ''));
+      if (/^(?:chapter|part|book|section)\s+(?:\d+|[ivxlcdm]+)[.：:]?$/i.test(title)) {
+        const subtitle = lines.slice(lineIndex + 1, lineIndex + 4).map((item) => trimText(item)).find(Boolean);
+        if (subtitle && subtitle.length <= 120 && !isUploadChapterHeading(subtitle)) title = `${title} ${subtitle}`;
+      }
+      current = { title, lines: [] };
+      return;
+    }
+    if (current) current.lines.push(line);
+  });
+  flush();
+
+  if (sections.length >= 3) return sections;
+
+  const paragraphs = splitParagraphs(cleaned);
+  const chunkSize = Math.max(1, Math.ceil(paragraphs.length / 8));
+  return Array.from({ length: Math.min(8, Math.ceil(paragraphs.length / chunkSize)) }, (_, index) => ({
+    index,
+    title: `正文第 ${index + 1} 段`,
+    body: paragraphs.slice(index * chunkSize, (index + 1) * chunkSize).join('\n\n'),
+  })).filter((section) => section.body.length >= 120);
+}
+
+function selectUploadChapterSample(chapters, limit = 12) {
+  if (chapters.length <= limit) return chapters;
+  const indexes = new Set([0, chapters.length - 1]);
+  for (let index = 1; index < limit - 1; index += 1) {
+    indexes.add(Math.round(index * (chapters.length - 1) / (limit - 1)));
+  }
+  return [...indexes].sort((a, b) => a - b).map((index) => chapters[index]);
+}
+
+function buildChapterEvidenceExcerpt(body, maxChars = 360) {
+  const paragraphs = splitParagraphs(body).filter((item) => trimText(item).length >= 40);
+  if (!paragraphs.length) return trimText(body).slice(0, maxChars);
+  const candidates = [paragraphs[0], paragraphs[Math.floor(paragraphs.length / 2)], paragraphs[paragraphs.length - 1]];
+  return uniqueTrimmedList(candidates, 3).join('\n').slice(0, maxChars);
+}
+
+function buildUploadChapterPacket(text) {
+  const chapters = splitUploadIntoChapters(text);
+  const selected = selectUploadChapterSample(chapters);
+  const packet = selected.map((chapter) => (
+    `[章节 ${chapter.index + 1}/${chapters.length}] ${chapter.title}\n${buildChapterEvidenceExcerpt(chapter.body)}`
+  )).join('\n\n');
+  return { chapters, selected, packet };
+}
+
 function uploadPartsReflectHeadings(map, input) {
   const headings = extractHeadingHints(cleanUploadedBookText(input?.content)).slice(0, 6);
   if (headings.length < 3) {
@@ -4142,15 +4218,13 @@ function buildCompressedUploadContent(text) {
     return plainText.slice(0, UPLOAD_COMPRESSED_TEXT_MAX_CHARS);
   }
 
-  const headingHints = extractHeadingHints(normalizedText);
+  const chapterPacket = buildUploadChapterPacket(normalizedText);
+  const headingHints = chapterPacket.chapters.map((chapter) => chapter.title).slice(0, 60);
   const frequentTerms = extractUploadFrequentTerms(normalizedText, headingHints, 12);
-  const keyParagraphs = collectUploadKeyParagraphs(paragraphs, frequentTerms, 8);
   const chunks = [
-    ['开头片段', collectParagraphWindow(paragraphs, 0, 3200, 5)],
-    headingHints.length > 0 ? ['目录/章节标题', headingHints.join('\n')] : null,
+    chapterPacket.packet ? ['分层章节样本', chapterPacket.packet] : null,
+    headingHints.length > 0 ? ['完整章节索引', headingHints.join('\n')] : null,
     frequentTerms.length > 0 ? ['高频关键词', frequentTerms.join(' / ')] : null,
-    ...keyParagraphs.map((paragraph, index) => [`高频关键段 ${index + 1}`, paragraph]),
-    ['结尾片段', collectParagraphWindow(paragraphs, Math.max(0, paragraphs.length - 4), 2600, 4)],
   ].filter(Boolean).filter(([, value]) => trimText(value));
 
   const compressed = [
@@ -4165,6 +4239,7 @@ function buildCompressedUploadContent(text) {
 function compactUploadSeedText(text, maxLength = 24) {
   return trimText(String(text || ''))
     .replace(/^第[\d一二三四五六七八九十百千]+[章节部卷篇回]\s*/g, '')
+    .replace(/^(?:chapter|part|book|section)\s+(?:\d+|[ivxlcdm]+)[.：:]?\s*/i, '')
     .replace(/^[：:、\-*•\d.)\s]+/g, '')
     .replace(/[。！？!?；;，,：:]+$/g, '')
     .slice(0, maxLength);
@@ -4255,6 +4330,318 @@ function buildUploadLocalCompactSeed(input, compressedContent = '') {
     quotes: quotes.length ? quotes : [{ quote: `关键判断：${oneLiner}`, note: buildUploadQuoteNote(oneLiner, input, 0) }],
     routes: routes.slice(0, 3),
   };
+}
+
+function expandUploadChapterSeed(seed, input) {
+  const chapters = splitUploadIntoChapters(input?.content);
+  const sourceChapterKeys = new Set(chapters.map((chapter) => normalize(chapter.title)));
+  let rawParts = Array.isArray(seed?.parts) ? seed.parts.slice(0, 6) : [];
+  const hasCompleteModelParts = rawParts.length >= 4 && rawParts.every((part) => (
+    part && typeof part === 'object' && trimText(part.title) && Array.isArray(part.chapters) && part.chapters.length >= 2
+  ));
+  if (!hasCompleteModelParts && chapters.length >= 4) rawParts = [];
+  if (rawParts.length < 4 && chapters.length < 4) {
+    const supplementalParts = (Array.isArray(seed?.overview) ? seed.overview : [])
+      .map((item) => (typeof item === 'string' ? { title: item } : item))
+      .filter((item) => trimText(item?.title));
+    rawParts = dedupeMethodItems(rawParts.concat(supplementalParts).map((item) => (
+      typeof item === 'string' ? { title: item } : item
+    ))).slice(0, 6);
+  }
+  if (rawParts.length < 4 && chapters.length >= 4) {
+    const groupCount = Math.min(4, chapters.length);
+    rawParts = Array.from({ length: groupCount }, (_, index) => {
+      const start = Math.floor(index * chapters.length / groupCount);
+      const end = Math.max(start + 1, Math.floor((index + 1) * chapters.length / groupCount));
+      const group = chapters.slice(start, end);
+      const title = compactUploadSeedText(group[0]?.title, 30) || `正文模块 ${index + 1}`;
+      return {
+        title,
+        summary: `从${group[0]?.title}到${group[group.length - 1]?.title}，共同推进“${title}”这一问题。`,
+        judgment: `比较这组章节的前提与结果，判断“${title}”成立的条件。`,
+        role: `这一组从“${title}”推进到下一阶段，并保留需要后文验证的边界。`,
+        chapters: group.slice(0, 3).map((chapter) => chapter.title),
+      };
+    });
+  }
+  const parts = rawParts.map((part, index) => {
+    const item = typeof part === 'string' ? { title: part } : part;
+    const fallbackIndex = Math.round(index * (chapters.length - 1) / Math.max(1, rawParts.length - 1));
+    const matched = findEvidenceChapters(
+      chapters,
+      `${item?.title || ''} ${item?.summary || ''} ${(item?.chapters || []).join(' ')}`,
+      fallbackIndex,
+      3,
+    );
+    const declaredChapters = (item?.chapters || []).filter((title) => sourceChapterKeys.has(normalize(title)));
+    const chapterTitles = uniqueTrimmedList(
+      declaredChapters
+        .concat(matched.map((chapter) => chapter.title))
+        .concat([
+          chapters[fallbackIndex]?.title,
+          chapters[Math.min(chapters.length - 1, fallbackIndex + 1)]?.title,
+          chapters[Math.max(0, fallbackIndex - 1)]?.title,
+        ]),
+      3,
+    );
+    const title = trimText(item?.title) || chapterTitles[0] || `正文模块 ${index + 1}`;
+    const rawSummary = trimText(item?.summary).replace(/[。！？；，,]+$/g, '');
+    const rawJudgment = trimText(item?.judgment).replace(/[。！？；，,]+$/g, '');
+    const rawRole = trimText(item?.role).replace(/[。！？；，,]+$/g, '');
+    const summary = rawSummary.length >= 18
+      ? rawSummary
+      : `${rawSummary || title}，具体对应${chapterTitles.join('、')}中的问题推进。`;
+    const judgment = rawJudgment.length >= 18
+      ? rawJudgment
+      : `${rawJudgment || `判断“${title}”成立的条件`}，并对照章节中的前提与结果。`;
+    const role = rawRole.length >= 18
+      ? rawRole
+      : `${rawRole || `把“${title}”推向后续问题`}，同时留下需要继续验证的边界。`;
+    return { ...item, title, summary, judgment, role, navDesc: summary, task: judgment, position: role, chapters: chapterTitles };
+  });
+
+  const methods = parts.flatMap((part, index) => {
+    const chapter = part.chapters[0] || chapters[index]?.title || '对应章节';
+    return [
+      {
+        category: '证据识别',
+        title: `核对“${part.title}”的成立条件`,
+        action: `把“${part.navDesc}”作为待检验假设，在${chapter}标出支持、反例与适用条件，核对：${part.task}`,
+      },
+      {
+        category: '结构追踪',
+        title: `追踪“${part.title}”如何转向`,
+        action: `对照${part.chapters.slice(0, 2).join('与')}的论证动作，说明“${part.navDesc}”如何推进到“${part.position}”。`,
+      },
+    ];
+  }).slice(0, 12);
+
+  const quoteChapters = selectUploadChapterSample(chapters, 5);
+  const quotes = quoteChapters.map((chapter) => ({
+    quote: uploadEvidenceSnippet(chapter),
+    note: `正文证据：${chapter.title}`,
+  }));
+  const firstPart = parts[0];
+  const middlePart = parts[Math.floor(parts.length / 2)];
+  const lastPart = parts[parts.length - 1];
+  const routes = [
+    { audience: '先搭全书骨架的读者', route: `先看${firstPart?.title || '开篇章节'}，再看${middlePart?.title || '中段章节'}如何改变问题，最后回到正文结尾核对收束。`, focus: [firstPart?.chapters?.[0], middlePart?.chapters?.[0]].filter(Boolean) },
+    { audience: '重点核对论证的读者', route: `先按章节检查${middlePart?.title || '中段转折'}的前提与反例，再顺着正文结构推进到${lastPart?.title || '结尾判断'}。`, focus: [middlePart?.chapters?.[0], lastPart?.chapters?.[0]].filter(Boolean) },
+    { audience: '准备完整精读的读者', route: `先看各模块引用的章节，再看相邻章节之间的转折，最后回到正文逐章验证结论边界。`, focus: [firstPart?.title, lastPart?.title].filter(Boolean) },
+  ];
+
+  return {
+    ...seed,
+    overview: Array.isArray(seed?.overview) && seed.overview.length >= 4
+      ? seed.overview.slice(0, 4)
+      : parts.slice(0, 4).map((part) => part.title),
+    parts,
+    methods,
+    quotes,
+    routes,
+  };
+}
+
+function uploadEvidenceSnippet(chapter) {
+  const sentence = splitSentences(trimText(chapter?.body)).find((item) => trimText(item).length >= 45);
+  const value = trimText(sentence || chapter?.body);
+  if (value.length <= 240) return value;
+  const clipped = value.slice(0, 240);
+  return /\s/.test(clipped) ? clipped.replace(/\s+\S*$/u, '').trim() : clipped;
+}
+
+function scoreChapterForText(chapter, text) {
+  const haystack = normalize(`${chapter?.title || ''} ${chapter?.body || ''}`);
+  const terms = extractGroundingKeywords(text).map((item) => normalize(item)).filter((item) => item.length >= 3);
+  return terms.reduce((score, term) => score + (haystack.includes(term) ? Math.min(term.length, 12) : 0), 0);
+}
+
+function findEvidenceChapters(chapters, text, fallbackIndex, limit = 1) {
+  const ranked = chapters
+    .map((chapter) => ({ chapter, score: scoreChapterForText(chapter, text) }))
+    .sort((left, right) => right.score - left.score || left.chapter.index - right.chapter.index);
+  const matched = ranked.filter((item) => item.score > 0).slice(0, limit).map((item) => item.chapter);
+  if (matched.length) return matched;
+  if (!chapters.length) return [];
+  const index = Math.min(chapters.length - 1, Math.max(0, fallbackIndex));
+  return [chapters[index]];
+}
+
+function bindUploadMapEvidence(map, input) {
+  if (getSourceStrategy(input) !== 'upload') return map;
+  const chapters = splitUploadIntoChapters(input?.content);
+  if (!chapters.length) return map;
+  const partCount = Math.max(1, map?.parts?.length || 1);
+
+  const parts = (map?.parts || []).map((part, index) => {
+    const fallbackIndex = Math.round(index * (chapters.length - 1) / Math.max(1, partCount - 1));
+    const semanticChapters = findEvidenceChapters(
+      chapters,
+      `${part?.title || ''} ${part?.navDesc || ''} ${part?.task || ''} ${(part?.chapters || []).join(' ')}`,
+      fallbackIndex,
+      2,
+    );
+    const sourceChapterKeys = new Set(chapters.map((chapter) => normalize(chapter.title)));
+    const validDeclaredChapters = (part?.chapters || [])
+      .filter((title) => sourceChapterKeys.has(normalize(title)))
+      .map((title) => chapters.find((chapter) => normalize(chapter.title) === normalize(title)))
+      .filter(Boolean);
+    const evidenceChapters = [...validDeclaredChapters, chapters[fallbackIndex], ...semanticChapters]
+      .filter(Boolean)
+      .filter((chapter, chapterIndex, items) => items.findIndex((item) => item.title === chapter.title) === chapterIndex)
+      .slice(0, 2);
+    return {
+      ...part,
+      chapters: uniqueTrimmedList(
+        evidenceChapters.map((chapter) => chapter.title)
+          .concat(validDeclaredChapters.map((chapter) => chapter.title))
+          .concat([
+            chapters[Math.min(chapters.length - 1, fallbackIndex + 1)]?.title,
+            chapters[Math.max(0, fallbackIndex - 1)]?.title,
+          ]),
+        4,
+      ),
+      sourceEvidence: evidenceChapters.map((chapter) => ({
+        chapter: chapter.title,
+        excerpt: uploadEvidenceSnippet(chapter),
+      })),
+    };
+  });
+
+  const methodItems = (map?.methods?.items || []).map((item, index) => {
+    const chapter = findEvidenceChapters(chapters, `${item?.title || ''} ${item?.desc || ''}`, index % chapters.length, 1)[0];
+    return {
+      ...item,
+      sourceEvidence: chapter ? [{ chapter: chapter.title, excerpt: uploadEvidenceSnippet(chapter) }] : [],
+    };
+  });
+
+  const routes = (map?.routes || []).map((route, index) => {
+    const anchors = [
+      chapters[Math.round(index * (chapters.length - 1) / Math.max(1, (map?.routes?.length || 1) - 1))],
+      chapters[chapters.length - 1],
+    ].filter(Boolean);
+    return {
+      ...route,
+      sourceEvidence: uniqueTrimmedList(anchors.map((chapter) => chapter.title), 2).map((title) => {
+        const chapter = chapters.find((item) => item.title === title);
+        return { chapter: title, excerpt: uploadEvidenceSnippet(chapter) };
+      }),
+    };
+  });
+
+  return { ...map, parts, methods: { ...map.methods, items: methodItems }, routes };
+}
+
+function textBigrams(value) {
+  const text = normalize(value).replace(/\s+/g, '');
+  const grams = new Set();
+  for (let index = 0; index < text.length - 1; index += 1) grams.add(text.slice(index, index + 2));
+  return grams;
+}
+
+function bigramSimilarity(left, right) {
+  const a = textBigrams(left);
+  const b = textBigrams(right);
+  if (!a.size || !b.size) return 0;
+  let intersection = 0;
+  a.forEach((item) => { if (b.has(item)) intersection += 1; });
+  return intersection / (a.size + b.size - intersection);
+}
+
+function collectUploadQualityGateIssues(map, input) {
+  const chapters = splitUploadIntoChapters(input?.content);
+  if (trimText(input?.content).length < 12000 && chapters.length < 6) return [];
+  const issues = [];
+  const parts = map?.parts || [];
+  const methods = map?.methods?.items || [];
+  const visibleText = JSON.stringify({
+    overview: map?.overview,
+    parts,
+    methods,
+    timeline: map?.timeline,
+    quotes: map?.quotes,
+    routes: map?.routes,
+  });
+  if (/(?:\d+字内|真实章节标题|推进判断\d*|模块名|you if you help yourself)/i.test(visibleText)) {
+    issues.push('出现 schema 占位词、截断句或无效标题。');
+  }
+  const forbiddenTemplates = [
+    '是进入这本书的一段核心阅读模块',
+    '判断这一部分值得读什么',
+    '放回整本书的推进链',
+    '回到正文验证这一段的推进动作',
+    '具体观察点，用来把抽象观点落成可操作的判断动作',
+    '把章节压成推进链',
+  ];
+  const templateHits = forbiddenTemplates.filter((phrase) => visibleText.split(phrase).length - 1 >= 2);
+  if (templateHits.length) issues.push(`重复模板句：${templateHits.join(' / ')}`);
+
+  let maxPartSimilarity = 0;
+  for (let left = 0; left < parts.length; left += 1) {
+    for (let right = left + 1; right < parts.length; right += 1) {
+      maxPartSimilarity = Math.max(maxPartSimilarity, bigramSimilarity(
+        `${parts[left]?.title} ${parts[left]?.navDesc} ${parts[left]?.task} ${parts[left]?.position}`,
+        `${parts[right]?.title} ${parts[right]?.navDesc} ${parts[right]?.task} ${parts[right]?.position}`,
+      ));
+    }
+  }
+  if (maxPartSimilarity >= 0.60) issues.push(`模块表达重复度过高：最高相似度 ${maxPartSimilarity.toFixed(2)}`);
+
+  const uniqueMethodTitles = new Set(methods.map((item) => normalize(item?.title)).filter(Boolean));
+  if (uniqueMethodTitles.size < Math.min(8, methods.length)) issues.push('方法卡标题存在重复或近似占位。');
+  let maxMethodSimilarity = 0;
+  for (let left = 0; left < methods.length; left += 1) {
+    for (let right = left + 1; right < methods.length; right += 1) {
+      maxMethodSimilarity = Math.max(maxMethodSimilarity, bigramSimilarity(
+        `${methods[left]?.title} ${methods[left]?.desc}`,
+        `${methods[right]?.title} ${methods[right]?.desc}`,
+      ));
+    }
+  }
+  if (maxMethodSimilarity >= 0.72) issues.push(`方法卡重复度过高：最高相似度 ${maxMethodSimilarity.toFixed(2)}`);
+
+  const sourceText = normalize(cleanUploadedBookText(input?.content));
+  const sourceChapterKeys = new Set(chapters.map((chapter) => normalize(chapter.title)));
+  const invalidChapterRefs = parts.flatMap((part) => part?.chapters || [])
+    .filter((title) => !sourceChapterKeys.has(normalize(title)));
+  if (invalidChapterRefs.length) issues.push(`存在 ${invalidChapterRefs.length} 个无法对应原文的章节引用。`);
+  const groundedQuoteCount = (map?.quotes || []).filter((item) => (
+    normalize(item?.quote).length >= 30 && sourceText.includes(normalize(item.quote))
+  )).length;
+  if (groundedQuoteCount < Math.min(4, map?.quotes?.length || 0)) {
+    issues.push(`正文 quotes 不足：仅 ${groundedQuoteCount}/${map?.quotes?.length || 0} 条可在原文定位。`);
+  }
+  const evidence = parts.flatMap((part) => part?.sourceEvidence || []);
+  const validEvidence = evidence.filter((item) => (
+    chapters.some((chapter) => normalize(chapter.title) === normalize(item?.chapter)) &&
+    normalize(item?.excerpt).length >= 30 && sourceText.includes(normalize(item.excerpt))
+  ));
+  const coveredChapters = new Set(validEvidence.map((item) => normalize(item.chapter)));
+  const minimumCoverage = Math.min(4, Math.max(3, Math.ceil(chapters.length * 0.12)));
+  if (validEvidence.length < parts.length) issues.push(`正文证据不足：${validEvidence.length}/${parts.length} 个模块有可追溯证据。`);
+  if (coveredChapters.size < minimumCoverage) issues.push(`章节覆盖不足：仅覆盖 ${coveredChapters.size}/${chapters.length} 章。`);
+  if (parts.length < 4 || methods.length < 8 || (map?.routes?.length || 0) < 3) issues.push('核心区块数量未达到深度地图下限。');
+  return issues;
+}
+
+function buildUploadQualityRetryPrompt(input, compressedContent, currentMap, issues) {
+  return `
+只返回合法 JSON，不要解释。上一版深度阅读地图未通过质量门禁，必须基于章节证据重写，不得修辞性补丁。
+
+失败原因：
+${issues.map((item, index) => `${index + 1}. ${item}`).join('\n')}
+
+章节索引与跨全书证据：
+${compressedContent}
+
+上一版仅供识别重复，不得照抄：
+${JSON.stringify({ overview: currentMap?.overview, parts: currentMap?.parts, methods: currentMap?.methods, routes: currentMap?.routes }).slice(0, 5000)}
+
+返回与初次生成相同的章节聚类 JSON：oneLiner、about、overview(4)、parts(恰好4条)。不要输出 methods、quotes、routes。
+parts 必须覆盖开篇、中段和结尾，每个 chapters 只能逐字引用输入里的真实章节标题。相邻模块必须有不同问题、不同论证动作和不同结论。
+禁止复用：核心阅读模块、值得读什么、放回推进链、回到正文验证、具体观察点、把章节压成推进链。
+  `.trim();
 }
 
 function extractCatalogGroundingHints(groundingContext, input = {}) {
@@ -4986,7 +5373,7 @@ ${JSON.stringify({
 function buildCompactUploadPrompt(input, compressedContent, groundingContext) {
   return `
 只返回合法 JSON，不要解释，不要 markdown。
-基于压缩正文，为《${input.title}》生成一份正文证据优先的深度阅读地图草稿。
+基于“完整章节索引 + 跨全书章节样本”，为《${input.title}》生成分层深度阅读地图。
 正文证据优先；如果正文与书名常识冲突，优先相信正文，不要用外部常识替代正文结构。
 
 作者：${input.author || '待确认'}
@@ -4996,34 +5383,26 @@ ${groundingContext ? `辅助 grounding：${groundingContext}` : '辅助 groundin
 
 返回这个结构，优先填满：
 {
-  "oneLiner": "18字内",
-  "about": "120字内",
-  "overview": [
-    { "title": "判断1", "desc": "说明", "points": ["点1", "点2", "点3"] }
-  ],
+  "oneLiner": "",
+  "about": "",
+  "overview": ["", "", "", ""],
   "parts": [
-    { "title": "模块名", "navDesc": "为什么先读这部分", "task": "这一部分要完成的认知动作", "position": "它在全书结构里的位置", "takeaways": ["要点1", "要点2", "要点3"], "chapters": ["章节1", "章节2", "章节3"] }
-  ],
-  "methods": [
-    { "category": "分类", "title": "动作", "desc": "如何用，为什么它来自正文" }
-  ],
-  "quotes": [
-    { "quote": "正文短句或关键判断", "note": "它对应正文中的什么价值" }
-  ],
-  "routes": [
-    { "audience": "读者类型", "route": "按正文结构怎么读", "focus": ["重点1", "重点2", "重点3"] }
+    { "title": "", "summary": "", "judgment": "", "role": "", "chapters": [] }
   ]
 }
 
 要求：
 - 这是 upload 深度阅读地图，不是读前导读地图。
 - 所有内容优先来自正文证据，少用外部常识，不要假装拥有正文里没有的细节。
-- overview 至少 4 条，必须形成正文推进链。
-- parts 输出 4 到 6 条，必须像正文阅读模块名，禁止“问题定义 / 结构展开 / 方法提炼 / 阅读路线”这类泛标题。
-- methods 输出 8 到 12 条，必须是从正文里提炼出的判断动作、识别动作或阅读动作。
-- quotes 输出 4 到 6 条。能确认是正文短句时保留原句；不能确认时降级为“关键判断：...”。每条 note 必须说明它对应的正文价值。
-- routes 输出 3 条，必须回答“按正文结构怎么读”，并包含“先看 / 再看 / 最后 / 回到正文 / 章节 / 结构推进”中的多个表达。
-- parts、methods、quotes、routes 尽量沿着章节标题、正文转折和结尾收束来组织。
+- 先在内部完成两层摘要：逐章识别“本章问题/推进动作/结论”，再把相邻章节聚合成 4 到 6 个阅读模块；只输出最终 JSON。
+- 这是供后端展开的章节聚类种子，句子必须短而具体，不写长篇解释。
+- oneLiner 18 字内，about 80 字内；part 的 title 12 字内、summary 30 字内、judgment 和 role 各 24 字内。
+- overview 恰好 4 条，分别覆盖开篇、中段转折、后段深化和结尾收束。
+- parts 恰好输出 4 条，严格遵守字段限字，必须像正文阅读模块名，禁止“问题定义 / 结构展开 / 方法提炼 / 阅读路线”这类泛标题。
+- 每个 part 的 chapters 必须引用 2 到 4 个输入中真实存在的章节标题，不得自造章节名；不同 part 尽量覆盖不同章节。
+- 每个 part 的 summary、judgment、role 必须分别说明“正文在讲什么、读者如何判断、它如何推动下一部分”，禁止套用相同句式。
+- 不要输出 methods、quotes、routes，后端会依据章节证据展开这些区块。
+- 禁止复用这些模板句：是进入这本书的一段核心阅读模块、判断这一部分值得读什么、放回整本书的推进链、回到正文验证这一段的推进动作、具体观察点。
   `.trim();
 }
 
@@ -5132,17 +5511,17 @@ function inflateCompactReadingMapSeed(seed, input) {
     knowledgeMap: fallbackKnowledge,
     parts: parts.map((item, index) => {
       const title = trimText(typeof item === 'string' ? item : item?.title) || fallback.parts[index]?.title;
-      const desc = trimText(typeof item === 'string' ? '' : item?.desc);
+      const desc = trimText(typeof item === 'string' ? '' : (item?.desc || item?.summary));
       const catalogToolkit = input.sourceKind === 'catalog' ? buildCatalogPartToolkit(title, index) : null;
       const navDesc = trimText(typeof item === 'string' ? '' : item?.navDesc) || desc || catalogToolkit?.navDesc || `${title} 是进入这本书的一段核心阅读模块。`;
-      const task = trimText(typeof item === 'string' ? '' : item?.task) || desc || catalogToolkit?.task || `先用“${title}”判断这一部分值得读什么。`;
+      const task = trimText(typeof item === 'string' ? '' : (item?.task || item?.judgment)) || desc || catalogToolkit?.task || `先用“${title}”判断这一部分值得读什么。`;
       const takeaways = Array.isArray(typeof item === 'string' ? null : item?.takeaways) ? item.takeaways.map((entry) => trimText(entry)).filter(Boolean).slice(0, 3) : [];
       const chapters = Array.isArray(typeof item === 'string' ? null : item?.chapters) ? item.chapters.map((entry) => trimText(entry)).filter(Boolean).slice(0, 3) : [];
       const derivedTakeaways = [
         ...(catalogToolkit?.takeaways || []),
         navDesc,
         task,
-        input.sourceKind === 'upload' ? '回到正文验证这一段的推进动作。' : '',
+        trimText(typeof item === 'string' ? '' : item?.role),
       ].filter(Boolean).slice(0, 3);
       const derivedChapters = [
         ...(catalogToolkit?.chapters || []),
@@ -5159,7 +5538,11 @@ function inflateCompactReadingMapSeed(seed, input) {
         task,
         takeaways: takeaways.length >= 3 ? takeaways : derivedTakeaways,
         chapters: chapters.length >= 3 ? chapters : derivedChapters,
-        position: trimText(item?.position) || catalogToolkit?.position || `${title} 帮助读者把这一段放回整本书的推进链里。`,
+        position: trimText(item?.position || item?.role) || catalogToolkit?.position || (
+          input.sourceKind === 'upload'
+            ? `${task}，并据此连接下一组章节。`
+            : `${title} 帮助读者把这一段放回整本书的推进链里。`
+        ),
       };
     }),
     methods: {
@@ -5168,7 +5551,7 @@ function inflateCompactReadingMapSeed(seed, input) {
         id: String(index + 1).padStart(2, '0'),
         category: trimText(typeof item === 'string' ? '' : item?.category) || methodCategories[0] || defaultMethodCategories[index % defaultMethodCategories.length],
         title: trimText(typeof item === 'string' ? item : item?.title) || fallback.methods.items[index]?.title,
-        desc: trimText(typeof item === 'string' ? '' : item?.desc) || (
+        desc: trimText(typeof item === 'string' ? '' : (item?.desc || item?.action)) || (
           input.sourceKind === 'catalog'
             ? buildCatalogMethodDescription(trimText(typeof item === 'string' ? item : item?.title) || fallback.methods.items[index]?.title, index)
             : `把“${trimText(typeof item === 'string' ? item : item?.title) || fallback.methods.items[index]?.title}”当作进入这本书的一步动作。`
@@ -5822,7 +6205,7 @@ app.post('/api/generate-map', async (request, response) => {
       const groundingTimeoutMs = capStageTimeout(deadline, COMPACT_GROUNDING_TIMEOUT_MS, 1200);
       const useCompactGrounding = input.sourceKind === 'catalog'
         ? hasKnownAuthor(input.author)
-        : Boolean(input.author);
+        : false;
       const compressedContent = input.sourceKind === 'upload'
         ? buildCompressedUploadContent(input.content)
         : '';
@@ -5853,10 +6236,10 @@ app.post('/api/generate-map', async (request, response) => {
     const seedContent = await stageTracker.run('compact_model', async () => (
       fetchSiliconFlowContent({
         prompt,
-        maxTokens: input.sourceKind === 'upload' ? 1000 : 500,
+        maxTokens: input.sourceKind === 'upload' ? 900 : 500,
         temperature: 0,
         responseFormat: 'json_object',
-        model: SILICONFLOW_COMPACT_MODEL,
+        model: input.sourceKind === 'upload' ? SILICONFLOW_UPLOAD_MODEL : SILICONFLOW_COMPACT_MODEL,
         timeoutMs: sourcePreparation.modelTimeoutMs,
         jsonRepairMode: 'compact-seed',
       })
@@ -5883,7 +6266,7 @@ app.post('/api/generate-map', async (request, response) => {
     const seed = stageTracker.runSync('seed_stabilize', () => (
       input.sourceKind === 'catalog'
         ? stabilizeCatalogCompactSeed(parsedSeed, input, groundingContext)
-        : parsedSeed
+        : expandUploadChapterSeed(parsedSeed, input)
     ));
     const hasCuratedCatalogSeed = input.sourceKind === 'catalog' && Boolean(findBestCatalogSeed(input.title));
     if (seedRepairRecovery) {
@@ -5916,10 +6299,7 @@ app.post('/api/generate-map', async (request, response) => {
       input.sourceKind === 'upload' && (
         !map?.parts || map.parts.length < 4 ||
         !map?.methods?.items || map.methods.items.length < 8 ||
-        !map?.routes || map.routes.length < 3 ||
-        (trimText(input?.content).length > 4000 &&
-          extractHeadingHints(cleanUploadedBookText(input?.content)).length >= 3 &&
-          !uploadPartsReflectHeadings(map, input))
+        !map?.routes || map.routes.length < 3
       );
     if (((input.sourceKind === 'catalog' && !hasCuratedCatalogSeed) || needsUploadDeepen) && qualityFloorTimeoutMs) {
       const enrichedMap = await stageTracker.run('quality_floor_enrichment', async () => (
@@ -5933,6 +6313,50 @@ app.post('/api/generate-map', async (request, response) => {
         polishMapQuality(input, groundingContext, '', map, polishTimeoutMs)
       ));
       map = stageTracker.runSync('quality_floor_finalize', () => normalizeGeneratedMap(polishedMap, input));
+    }
+    if (input.sourceKind === 'upload') {
+      map = stageTracker.runSync('upload_evidence_bind', () => bindUploadMapEvidence(map, input));
+      let uploadGateIssues = stageTracker.runSync('upload_quality_gate', () => collectUploadQualityGateIssues(map, input));
+      if (uploadGateIssues.length) {
+        const retryTimeoutMs = capStageTimeout(deadline, 26000, 4500);
+        if (!retryTimeoutMs) {
+          const qualityError = new Error(`深度阅读地图未通过质量门禁：${uploadGateIssues.join('；')}`);
+          qualityError.code = 'UPLOAD_QUALITY_GATE_FAILED';
+          throw qualityError;
+        }
+        let retryContent;
+        try {
+          retryContent = await stageTracker.run('upload_quality_retry', async () => (
+            fetchSiliconFlowContent({
+              prompt: buildUploadQualityRetryPrompt(input, sourcePreparation.compressedContent, map, uploadGateIssues),
+              maxTokens: 900,
+              temperature: 0.15,
+              responseFormat: 'json_object',
+              model: SILICONFLOW_UPLOAD_MODEL,
+              timeoutMs: retryTimeoutMs,
+              jsonRepairMode: 'compact-seed',
+            })
+          ));
+        } catch (retryError) {
+          const qualityError = new Error(`深度阅读地图质量重试失败：${summarizeError(retryError)?.message || 'model error'}`);
+          qualityError.code = 'UPLOAD_QUALITY_GATE_FAILED';
+          throw qualityError;
+        }
+        const retrySeed = stageTracker.runSync('upload_quality_retry_parse', () => expandUploadChapterSeed(
+          extractJsonCandidate(retryContent, 'compact-seed'),
+          input,
+        ));
+        map = stageTracker.runSync('upload_quality_retry_finalize', () => bindUploadMapEvidence(
+          normalizeGeneratedMap(inflateCompactReadingMapSeed(retrySeed, input), input),
+          input,
+        ));
+        uploadGateIssues = stageTracker.runSync('upload_quality_gate_final', () => collectUploadQualityGateIssues(map, input));
+        if (uploadGateIssues.length) {
+          const qualityError = new Error(`深度阅读地图重试后仍未通过质量门禁：${uploadGateIssues.join('；')}`);
+          qualityError.code = 'UPLOAD_QUALITY_GATE_FAILED';
+          throw qualityError;
+        }
+      }
     }
     const coverLookupTimeoutMs = capStageTimeout(deadline, COVER_LOOKUP_TIMEOUT_MS, 1000);
     map.cover = await stageTracker.run('cover_lookup', async () => (
@@ -5964,9 +6388,33 @@ app.post('/api/generate-map', async (request, response) => {
       error: summarizeError(error),
       ...generateMeta,
     });
-    const canUseCompactFallback =
+    if (error?.code === 'UPLOAD_QUALITY_GATE_FAILED') {
+      stageTracker.mark('response_build');
+      appendRequestLogMeta({
+        provider: 'siliconflow',
+        outcome: 'error',
+        errorType: 'quality_gate_failed',
+      });
+      finalizeGenerateObservation({
+        sourceKind: generateMeta.sourceKind,
+        provider: 'siliconflow',
+        mode: null,
+        totalDurationMs: stageTracker.totalDurationMs(),
+        stages: stageTracker.summary(),
+        fallbackUsed: false,
+        fallbackReason: 'quality_gate_failed',
+        fallbackReasonType: 'quality_gate_failed',
+      });
+      response.status(422).json({
+        error: '深度阅读地图未达到正文证据与重复度要求，请重试。',
+        code: 'UPLOAD_QUALITY_GATE_FAILED',
+      });
+      return;
+    }
+    const canUseCompactFallback = input.sourceKind !== 'upload' && (
       error instanceof SyntaxError ||
-      (error instanceof Error && /(timeout|aborted)/i.test(error.message));
+      (error instanceof Error && /(timeout|aborted)/i.test(error.message))
+    );
     if (canUseCompactFallback) {
       const map = stageTracker.runSync('fallback', () => buildPrototypeMap(input), {
         fallbackReason: fallbackMeta.fallbackReason,
