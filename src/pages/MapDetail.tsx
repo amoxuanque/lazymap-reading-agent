@@ -5,6 +5,10 @@ import { useApp } from '../contexts/AppContext';
 import { getMapById } from '../lib/mockData';
 import { createShareMap, getSharedMap } from '../services/shareService';
 
+function safeTextList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [];
+}
+
 export function MapDetail() {
   const { currentMapId, shareId, navigate, t } = useApp();
   const allCategoryLabel = '全部';
@@ -18,6 +22,15 @@ export function MapDetail() {
   const [activePart, setActivePart] = useState<string | undefined>(undefined);
   const [activeCategory, setActiveCategory] = useState<string | undefined>(undefined);
   const mapData = shareId ? sharedMap : localMapData;
+  const productType =
+    mapData?.sourceMeta?.productType ||
+    (mapData?.sourceMeta?.kind === 'upload'
+      ? 'deep-reading-map'
+      : mapData?.sourceMeta?.kind === 'catalog'
+        ? 'pre-reading-guide'
+        : undefined);
+  const isPreReadingGuide = productType === 'pre-reading-guide';
+  const isDeepReadingMap = productType === 'deep-reading-map';
   const leadingQuote = mapData?.quotes?.[0];
   const leadingRoute = mapData?.routes?.[0];
   const leadingCards = mapData?.overview?.cards?.slice(0, 3) || [];
@@ -195,9 +208,9 @@ export function MapDetail() {
     methodTitleSuffix: '条方法卡，不再只是一页摘要',
     methodDesc: '这里把方法按类别切成固定知识网格，先扫一遍，再挑与你工作最相关的几条深读。',
     timelineTitle: '把推进顺序看清',
-    quotesTitle: '最值得带走的句子',
+    quotesTitle: isDeepReadingMap ? t('map', 'quotesTitleDeepReading') : isPreReadingGuide ? t('map', 'quotesTitlePreReading') : '最值得带走的句子',
     debateTitle: '今天再读，哪些地方要带着判断',
-    routeTitle: '不同人该怎么读',
+    routeTitle: isDeepReadingMap ? t('map', 'routesTitleDeepReading') : isPreReadingGuide ? t('map', 'routesTitlePreReading') : '不同人该怎么读',
   };
 
   if (shareId && shareLoading) {
@@ -253,7 +266,7 @@ export function MapDetail() {
   const isShareActionDisabled = shareLinkLoading || Boolean(shareId && shareLoading);
 
   return (
-    <div className="min-h-screen bg-[#0f1117] text-zinc-300 font-sans selection:bg-amber-500/30">
+    <div className="map-detail min-h-screen bg-[#0f1117] text-zinc-300 font-sans selection:bg-amber-500/30">
       <nav className="sticky top-0 z-50 border-b border-white/5 bg-[#0f1117]/85 backdrop-blur-md">
         <div className="mx-auto flex max-w-7xl items-center px-4 sm:px-6 lg:px-8 h-14 overflow-x-auto scrollbar-hide">
           <button onClick={() => navigate('home')} className="mr-6 flex-shrink-0 text-zinc-400 hover:text-white transition-colors">
@@ -273,8 +286,15 @@ export function MapDetail() {
       <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-12 lg:py-20">
         <section className="flex flex-col lg:flex-row gap-12 lg:gap-24 mb-28">
           <div className="flex-1">
-            <div className="text-amber-500/80 text-sm font-medium tracking-widest mb-6 uppercase">
-              Reading Map
+            <div className="mb-6 flex flex-wrap items-center gap-3">
+              <div className="text-amber-500/80 text-sm font-medium tracking-widest uppercase">
+                Reading Map
+              </div>
+              {(isPreReadingGuide || isDeepReadingMap) && (
+                <span className="inline-flex items-center rounded-full border border-amber-500/20 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-200">
+                  {isDeepReadingMap ? t('map', 'deepReadingBadge') : t('map', 'preReadingBadge')}
+                </span>
+              )}
             </div>
             <h1 className="text-4xl sm:text-5xl lg:text-7xl font-serif font-bold leading-[1.1] tracking-tight text-white mb-8">
               《{mapData.title}》<br />
@@ -349,7 +369,7 @@ export function MapDetail() {
           </div>
 
           <div className="lg:w-[400px] flex-shrink-0">
-            <div className="relative rounded-[2rem] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(245,158,11,0.16),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(59,130,246,0.14),transparent_28%),linear-gradient(180deg,rgba(24,24,27,0.92),rgba(10,10,12,0.98))] p-8 overflow-hidden aspect-[3/4] flex flex-col justify-between shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
+            <div className="reading-map-poster relative rounded-[2rem] border border-white/10 p-8 overflow-hidden aspect-[3/4] flex flex-col justify-between shadow-[0_24px_55px_rgba(74,48,31,0.16)]">
               <div className="absolute top-16 right-16 h-28 w-28 rounded-full bg-amber-400/10 blur-3xl" />
               <div className="absolute bottom-16 left-10 h-24 w-24 rounded-full bg-sky-400/10 blur-3xl" />
               <div>
@@ -384,6 +404,20 @@ export function MapDetail() {
                 </p>
               </div>
             )}
+
+            {(isPreReadingGuide || isDeepReadingMap) && (
+              <div className="mt-8 rounded-2xl border border-white/5 bg-white/[0.02] p-5">
+                <div className="text-xs text-zinc-500 mb-2">{t('map', 'sourceMetaTitle')}</div>
+                {mapData.sourceMeta?.confidenceLabel && (
+                  <div className="mb-2 text-sm text-amber-300">{mapData.sourceMeta.confidenceLabel}</div>
+                )}
+                <p className="text-sm text-zinc-400 leading-relaxed">
+                  {isDeepReadingMap
+                    ? t('map', 'uploadDisclaimer')
+                    : mapData.sourceMeta?.disclaimer || t('map', 'catalogDisclaimer')}
+                </p>
+              </div>
+            )}
           </div>
         </section>
 
@@ -404,7 +438,7 @@ export function MapDetail() {
                   <h3 className="mt-5 text-2xl font-serif text-white">{leadingRoute.audience}</h3>
                   <p className="mt-4 text-sm leading-relaxed text-zinc-400">{leadingRoute.route}</p>
                   <div className="mt-5 flex flex-wrap gap-2">
-                    {leadingRoute.focus.map((focus) => (
+                    {safeTextList(leadingRoute.focus).map((focus) => (
                       <span key={focus} className="rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-300">
                         {focus}
                       </span>
@@ -444,7 +478,7 @@ export function MapDetail() {
                   <h3 className="text-xl font-bold text-white mb-4">{card.title}</h3>
                   <p className="text-sm text-zinc-400 leading-relaxed mb-6">{card.desc}</p>
                   <ul className="space-y-2">
-                    {card.points.map((point) => (
+                    {safeTextList(card.points).map((point) => (
                       <li key={point} className="text-sm text-zinc-300 flex items-start">
                         <span className="mr-2 mt-1.5 h-1.5 w-1.5 rounded-full bg-zinc-600 flex-shrink-0" />
                         {point}
@@ -487,7 +521,7 @@ export function MapDetail() {
                       <h3 className="text-xl font-bold text-white mb-3">{tool.title}</h3>
                       <p className="text-sm text-zinc-400 mb-4">{tool.desc}</p>
                       <ul className="space-y-2">
-                        {tool.points.map((point) => (
+                        {safeTextList(tool.points).map((point) => (
                           <li key={point} className="text-sm text-zinc-300 flex items-start">
                             <span className="mr-2 mt-1.5 h-1.5 w-1.5 rounded-full bg-zinc-600 flex-shrink-0" />
                             {point}
@@ -534,7 +568,7 @@ export function MapDetail() {
                       <p className="text-base text-zinc-300 leading-relaxed mb-8">{part.intro}</p>
 
                       <div className="flex flex-wrap gap-3 mb-10">
-                        {part.tags.map((tag) => (
+                        {safeTextList(part.tags).map((tag) => (
                           <span key={tag} className="rounded-full border border-white/10 px-4 py-1.5 text-xs text-zinc-400">
                             {tag}
                           </span>
@@ -549,7 +583,7 @@ export function MapDetail() {
                         <div className="rounded-2xl bg-white/[0.02] p-6 border border-white/5">
                           <h4 className="text-sm font-bold text-white mb-4">{copy.priorityChapters}</h4>
                           <div className="flex flex-wrap gap-2">
-                            {part.chapters.map((chapter) => (
+                            {safeTextList(part.chapters).map((chapter) => (
                               <span key={chapter} className="rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-400">
                                 {chapter}
                               </span>
@@ -559,7 +593,7 @@ export function MapDetail() {
                         <div className="rounded-2xl bg-white/[0.02] p-6 border border-white/5">
                           <h4 className="text-sm font-bold text-white mb-4">{copy.takeAway}</h4>
                           <ul className="space-y-2">
-                            {part.takeaways.map((takeaway) => (
+                            {safeTextList(part.takeaways).map((takeaway) => (
                               <li key={takeaway} className="text-sm text-zinc-400 flex items-start">
                                 <span className="mr-2 mt-1.5 h-1.5 w-1.5 rounded-full bg-zinc-600 flex-shrink-0" />
                                 {takeaway}
@@ -682,7 +716,7 @@ export function MapDetail() {
                     <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">{route.audience}</div>
                     <h3 className="mt-3 text-lg font-bold text-white">{route.route}</h3>
                     <div className="mt-4 flex flex-wrap gap-2">
-                      {route.focus.map((focus) => (
+                      {safeTextList(route.focus).map((focus) => (
                         <span key={focus} className="rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-400">
                           {focus}
                         </span>

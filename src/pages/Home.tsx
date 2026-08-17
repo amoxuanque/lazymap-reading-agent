@@ -21,7 +21,7 @@ export function Home() {
   return (
     <div className="flex flex-col gap-12 sm:gap-16 pb-12 min-h-screen bg-[#0f1117] text-zinc-300 px-4 sm:px-6 lg:px-8 pt-8">
       {/* Hero Section */}
-      <section className="relative overflow-hidden rounded-3xl bg-zinc-900/50 border border-white/5 px-4 py-16 sm:px-12 sm:py-24 text-center lg:px-16">
+      <section className="home-hero relative overflow-hidden rounded-3xl bg-zinc-900/50 border border-white/5 px-4 py-16 sm:px-12 sm:py-24 text-center lg:px-16">
         <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-amber-500/20 via-zinc-900/0 to-zinc-900/0"></div>
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
@@ -53,11 +53,11 @@ export function Home() {
           </form>
 
           <div className="mt-6 sm:mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
-            <Button variant="secondary" size="lg" className="w-full sm:w-auto rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white border-none" onClick={() => navigate('gen')}>
+            <Button variant="secondary" size="lg" className="w-full sm:w-auto" onClick={() => navigate('gen')}>
               <Upload className="mr-2 h-5 w-5" />
               {t('home', 'uploadBtn')}
             </Button>
-            <Button variant="outline" size="lg" className="w-full sm:w-auto rounded-xl border-white/10 text-zinc-300 hover:bg-white/5 hover:text-white" onClick={() => navigate('gen')}>
+            <Button variant="outline" size="lg" className="w-full sm:w-auto" onClick={() => navigate('gen')}>
               <Sparkles className="mr-2 h-5 w-5" />
               {t('home', 'paidBtn')}
             </Button>

@@ -17,12 +17,45 @@ const shareMapFixture = JSON.parse(
   readFileSync(path.join(rootDir, 'tests/fixtures/share-map.json'), 'utf8'),
 );
 const uploadSample = readFileSync(path.join(rootDir, 'tests/fixtures/upload-sample.txt'), 'utf8');
+const gutenbergUploadSample = `The Project Gutenberg eBook of 回归样本
+
+Title: 回归样本
+Author: 测试作者
+
+*** START OF THE PROJECT GUTENBERG EBOOK 回归样本 ***
+
+Produced by Regression Test
+
+第一章 先识别约束
+
+复杂系统不是元素堆叠，而是约束关系决定整体行为。理解正文时，应先确认问题如何被提出。
+
+第二章 再寻找转折
+
+有效阅读需要追踪作者反复回到的问题，并观察中段如何改变开场判断。
+
+第三章 提炼方法
+
+方法不能脱离证据，必须回到相邻段落确认条件、动作和适用边界。
+
+第四章 安排路线
+
+阅读路线应从主问题进入，经过结构转折，最后回到结尾检查全书如何收束。
+
+*** END OF THE PROJECT GUTENBERG EBOOK 回归样本 ***
+
+Project Gutenberg License`;
 
 let appPort = 0;
 let stubPort = 0;
 let serverProcess;
 let stubServer;
 let serverLogs = '';
+
+const catalogRoutePattern = /(先看|进入|判断|决定是否深读|再决定|读前|入口|重点读|顺着|沿着)/;
+const pseudoDeepReadPattern = /(基于正文|原文明确证明|原文证明|全书完整论证)/;
+const uploadRoutePattern = /(先看|再看|最后|回到正文|章节|结构推进|顺着正文|按正文结构)/;
+const genericUploadPartTitlePattern = /^(问题定义|结构展开|方法提炼|阅读路线)$/;
 
 function getJson(response) {
   return response.json();
@@ -34,6 +67,14 @@ function appendLog(chunk) {
 
 async function waitForLogsToFlush() {
   await new Promise((resolve) => setTimeout(resolve, 60));
+}
+
+function collectCatalogGuideTexts(map) {
+  return [
+    map?.about?.zh,
+    ...(map?.overview?.cards || []).flatMap((card) => [card?.title, card?.desc]),
+    ...(map?.debates || []).flatMap((item) => [item?.title, item?.value, item?.reservation]),
+  ].filter(Boolean).join('\n');
 }
 
 async function getFreePort() {
@@ -365,6 +406,14 @@ test('/api/generate-map supports catalog smoke without external model keys', asy
   assert.equal(payload.mode, 'prototype-fallback');
   assert.equal(payload.map.title, 'The Lever of Riches');
   assert.equal(payload.map.sourceMeta.mode, 'prototype-fallback');
+  assert.equal(payload.map.sourceMeta.productType, 'pre-reading-guide');
+  assert.equal(payload.map.sourceMeta.sourceBasis, 'public-grounding');
+  assert.equal(payload.map.sourceMeta.confidenceLabel, '基于公开资料整理');
+  assert.equal(payload.map.sourceMeta.disclaimer, '用于读前判断和阅读路线规划，不等同于原书全文精读');
+  assert.ok(payload.map.quotes.every((item) => item.quote.startsWith('关键判断：')));
+  assert.ok(payload.map.routes.every((item) => catalogRoutePattern.test(item.route)));
+  assert.equal(payload.map.routes.some((item) => /\b(oneLiner|about|parts|routes)\b/i.test(item.route)), false);
+  assert.equal(pseudoDeepReadPattern.test(collectCatalogGuideTexts(payload.map)), false);
 });
 
 test('/api/generate-map supports upload smoke without external model keys', async () => {
@@ -386,12 +435,42 @@ test('/api/generate-map supports upload smoke without external model keys', asyn
   assert.equal(payload.map.title, '上传样本');
   assert.equal(payload.map.author, '上传文件');
   assert.equal(payload.map.sourceMeta.kind, 'upload');
+  assert.equal(payload.map.sourceMeta.productType, 'deep-reading-map');
+  assert.equal(/fallback|quotes=/.test(payload.map.sourceMeta.summary), false);
+  assert.ok(payload.map.parts.length >= 4);
+  assert.ok(payload.map.methods.items.length >= 8);
+  assert.ok(payload.map.routes.length >= 3);
+  assert.equal(payload.map.parts.some((item) => genericUploadPartTitlePattern.test(item.title)), false);
+  assert.ok(payload.map.routes.every((item) => uploadRoutePattern.test(item.route)));
   await waitForLogsToFlush();
   assert.equal(serverLogs.includes('generate_map_summary'), true);
   assert.equal(serverLogs.includes('复杂系统不是把元素堆起来'), false);
   assert.equal(serverLogs.includes('真正有效的阅读，不是尽快得到结论'), false);
   assert.equal(serverLogs.includes('Output valid JSON only.'), false);
   assert.equal(serverLogs.includes('YOUR_SILICONFLOW_API_KEY'), false);
+});
+
+test('/api/generate-map sanitizes ebook boilerplate and keeps fallback maps render-safe', async () => {
+  const response = await fetch(`http://127.0.0.1:${appPort}/api/generate-map`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: '回归样本',
+      author: '测试作者',
+      sourceKind: 'upload',
+      content: gutenbergUploadSample,
+    }),
+  });
+  const payload = await getJson(response);
+  const visiblePayload = JSON.stringify(payload.map);
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.map.sourceMeta.productType, 'deep-reading-map');
+  assert.equal(/Project Gutenberg|Produced by|Title:|Author:/.test(visiblePayload), false);
+  assert.ok(payload.map.parts.every((part) => part.intro.length <= 1200));
+  assert.ok(payload.map.parts.flatMap((part) => part.takeaways).every((item) => typeof item === 'string'));
+  assert.ok(payload.map.parts.flatMap((part) => part.chapters).every((item) => typeof item === 'string'));
+  assert.ok(Buffer.byteLength(visiblePayload, 'utf8') < 100_000);
 });
 
 test('/api/generate-map repairs malformed upload compact seeds and stays source-grounded', async () => {
@@ -432,8 +511,12 @@ test('/api/generate-map repairs malformed upload compact seeds and stays source-
     assert.equal(payload.mode, 'source-grounded');
     assert.equal(payload.map.sourceMeta.kind, 'upload');
     assert.equal(payload.map.sourceMeta.mode, 'source-grounded');
-    assert.ok(payload.map.parts.length >= 2);
-    assert.ok(payload.map.methods.items.length >= 2);
+    assert.equal(payload.map.sourceMeta.productType, 'deep-reading-map');
+    assert.ok(payload.map.parts.length >= 4);
+    assert.ok(payload.map.methods.items.length >= 8);
+    assert.ok(payload.map.routes.length >= 3);
+    assert.equal(payload.map.parts.some((item) => genericUploadPartTitlePattern.test(item.title)), false);
+    assert.ok(payload.map.routes.every((item) => uploadRoutePattern.test(item.route)));
 
     await waitForLogsToFlush();
     assert.equal(repairedServer.logs.value.includes('generate_map_summary'), true);
@@ -492,8 +575,14 @@ test('/api/generate-map repairs malformed catalog compact seeds with curated loc
     assert.equal(payload.mode, 'title-only');
     assert.equal(payload.map.author, 'Daniel Kahneman');
     assert.match(payload.map.title, /思考.*Thinking, Fast and Slow/);
+    assert.equal(payload.map.sourceMeta.productType, 'pre-reading-guide');
+    assert.equal(payload.map.sourceMeta.sourceBasis, 'public-grounding');
+    assert.equal(payload.map.sourceMeta.confidenceLabel, '基于公开资料整理');
+    assert.equal(payload.map.sourceMeta.disclaimer, '用于读前判断和阅读路线规划，不等同于原书全文精读');
     assert.ok(payload.map.overview.cards.some((card) => /两套思维系统|偏误|慢思考/.test(card.title)));
     assert.ok(payload.map.quotes.every((item) => item.quote.startsWith('关键判断：')));
+    assert.ok(payload.map.routes.every((item) => catalogRoutePattern.test(item.route)));
+    assert.equal(pseudoDeepReadPattern.test(collectCatalogGuideTexts(payload.map)), false);
     assert.ok(payload.map.knowledgeMap.areas.length >= 4);
     assert.ok(payload.map.knowledgeMap.tools.length >= 4);
     assert.ok(payload.map.methods.items.length >= 10);
@@ -554,6 +643,10 @@ test('/api/generate-map uses curated Siddhartha seed instead of generic shell co
     assert.equal(payload.mode, 'title-only');
     assert.equal(payload.map.author, 'Hermann Hesse');
     assert.match(payload.map.title, /悉达多.*Siddhartha/);
+    assert.equal(payload.map.sourceMeta.productType, 'pre-reading-guide');
+    assert.equal(payload.map.sourceMeta.sourceBasis, 'public-grounding');
+    assert.equal(payload.map.sourceMeta.confidenceLabel, '基于公开资料整理');
+    assert.equal(payload.map.sourceMeta.disclaimer, '用于读前判断和阅读路线规划，不等同于原书全文精读');
     assert.equal(payload.map.oneLiner.zh, '觉悟不能靠抄别人的路');
     assert.deepEqual(
       payload.map.overview.cards.map((card) => card.title),
@@ -570,6 +663,9 @@ test('/api/generate-map uses curated Siddhartha seed instead of generic shell co
     assert.ok(payload.map.quotes.length >= 3);
     assert.ok(payload.map.debates.length >= 2);
     assert.ok(payload.map.routes.length >= 3);
+    assert.ok(payload.map.quotes.every((item) => item.quote.startsWith('关键判断：')));
+    assert.ok(payload.map.routes.every((item) => catalogRoutePattern.test(item.route)));
+    assert.equal(pseudoDeepReadPattern.test(collectCatalogGuideTexts(payload.map)), false);
     const catalogDensityTexts = [
       ...payload.map.knowledgeMap.areas.flatMap((area) => [area.title, area.desc]),
       ...payload.map.knowledgeMap.tools.flatMap((tool) => [tool.title, tool.desc, ...(tool.points || [])]),

@@ -16,6 +16,7 @@
     "baseline:quality": "node scripts/quality-baseline.mjs",
     "scan:decredit": "node scripts/scan-no-credit-strings.mjs",
     "scan:secrets": "node scripts/scan-no-secrets.mjs",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
     "check:release": "node scripts/check-release.mjs"
   },
   "dependencies": {
@@ -29,6 +30,7 @@
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.0",
+    "react-circular-progressbar": "^2.2.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.14.0",
     "tailwind-merge": "^3.5.0",
@@ -39,7 +41,7 @@
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "tailwindcss": "^4.1.14",
-    "tsx": "^4.21.0",
+    "tsx": "^4.23.12",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }

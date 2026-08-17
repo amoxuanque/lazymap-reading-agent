@@ -74,8 +74,8 @@ function updateUrl(page: Page, params?: { mapId?: string | null; shareId?: strin
     if (params.author) {
       next.searchParams.set('author', params.author);
     }
-  } else if (page === 'profile') {
-    next.searchParams.set('page', 'profile');
+  } else if (page !== 'home') {
+    next.searchParams.set('page', page);
   }
 
   window.history.replaceState({}, '', `${next.pathname}${next.search}`);

@@ -8,7 +8,7 @@
 
 @layer base {
   body {
-    @apply bg-[#0f1117] text-zinc-300 antialiased selection:bg-amber-500/30;
+    @apply bg-[#e8dfd1] text-[#35261d] antialiased selection:bg-[#c75b2d]/20;
   }
 }
 
@@ -22,4 +22,136 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
+}
+
+.warm-theme {
+    --warm-paper: #f7f0e4;
+    --warm-card: rgba(255, 250, 242, 0.76);
+    --warm-ink: #35261d;
+    --warm-muted: #796a5d;
+    --warm-line: #d8c8b2;
+    --warm-accent: #c75b2d;
+    background-color: var(--warm-paper);
+    background-image: url('/assets/reading-dashboard/paper-texture.webp');
+    background-size: 620px;
+    color: var(--warm-ink);
+  }
+
+  .warm-theme [class~="bg-[#0f1117]"],
+  .warm-theme [class~="bg-[#0f1117]/80"],
+  .warm-theme [class~="bg-[#0f1117]/85"],
+  .warm-theme [class~="bg-[#0f1117]/90"] {
+    background-color: transparent;
+  }
+
+  .warm-theme [class~="bg-white/[0.02]"],
+  .warm-theme [class~="bg-white/[0.03]"],
+  .warm-theme [class~="bg-white/[0.04]"],
+  .warm-theme [class~="bg-zinc-900/50"],
+  .warm-theme [class~="bg-zinc-950/30"],
+  .warm-theme [class~="bg-zinc-950/40"],
+  .warm-theme [class~="bg-zinc-950/60"],
+  .warm-theme [class~="bg-black/15"] {
+    background-color: var(--warm-card);
+  }
+
+  .warm-theme [class~="border-white/5"],
+  .warm-theme [class~="border-white/10"],
+  .warm-theme [class~="border-white/20"] {
+    border-color: var(--warm-line);
+  }
+
+  .warm-theme [class~="text-white"],
+  .warm-theme [class~="text-zinc-100"],
+  .warm-theme [class~="text-zinc-200"],
+  .warm-theme [class~="text-zinc-300"] {
+    color: var(--warm-ink);
+  }
+
+  .warm-theme [class~="text-zinc-400"] {
+    color: #655548;
+  }
+
+  .warm-theme [class~="text-zinc-500"],
+  .warm-theme [class~="text-zinc-600"] {
+    color: var(--warm-muted);
+  }
+
+  .warm-theme [class~="text-amber-500"],
+  .warm-theme [class~="text-amber-400/80"],
+  .warm-theme [class~="text-amber-500/80"],
+  .warm-theme [class~="text-amber-300"],
+  .warm-theme [class~="text-amber-200"],
+  .warm-theme [class~="text-amber-100"] {
+    color: #a74827;
+  }
+
+  .warm-theme [class~="bg-amber-500"] {
+    background-color: var(--warm-accent);
+    color: #fffaf2;
+  }
+
+  .warm-theme [class~="bg-amber-500/5"],
+  .warm-theme [class~="bg-amber-500/10"],
+  .warm-theme [class~="bg-amber-400/10"] {
+    background-color: rgba(199, 91, 45, 0.1);
+  }
+
+  .warm-theme [class~="bg-white/5"] {
+    background-color: #e5d8c5;
+  }
+
+  .warm-theme [class~="hover:bg-white/5"]:hover,
+  .warm-theme [class~="hover:bg-white/[0.04]"]:hover,
+  .warm-theme [class~="hover:bg-white/[0.05]"]:hover {
+    background-color: #efe4d4;
+  }
+
+  .warm-theme [class~="hover:text-white"]:hover,
+  .warm-theme [class~="hover:text-zinc-200"]:hover {
+    color: var(--warm-ink);
+  }
+
+  .warm-theme :where(.home-hero, .book-card, .map-detail [class~="rounded-3xl"], .map-detail [class~="rounded-[2rem]"]) {
+    box-shadow: 0 12px 32px rgba(74, 48, 31, 0.07);
+  }
+
+  .warm-theme .home-hero {
+    background-color: rgba(255, 250, 242, 0.62);
+    border-color: var(--warm-line);
+  }
+
+  .warm-theme .home-hero > [class*="radial-gradient"] {
+    opacity: 0.08;
+  }
+
+  .warm-theme .generated-cover,
+  .warm-theme .reading-map-poster {
+    background-color: #efe4d3;
+    background-image: url('/assets/reading-dashboard/paper-texture.webp');
+    background-size: 440px;
+  }
+
+  .warm-theme .reading-map-poster > [class~="blur-3xl"] {
+    display: none;
+  }
+
+  .warm-theme #overview [class~="bg-gradient-to-r"] {
+    background: var(--warm-accent);
+  }
+
+  .warm-theme input,
+  .warm-theme textarea {
+    caret-color: var(--warm-accent);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .warm-theme *,
+    .warm-theme *::before,
+    .warm-theme *::after {
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+    }
 }

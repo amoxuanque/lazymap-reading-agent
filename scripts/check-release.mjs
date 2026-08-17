@@ -6,6 +6,7 @@ const steps = [
   { label: 'Server syntax', command: 'node', args: ['--check', 'server.js'] },
   { label: 'Type check', command: npmExecutable, args: ['run', 'lint'] },
   { label: 'Build', command: npmExecutable, args: ['run', 'build'] },
+  { label: 'Production dependency audit', command: npmExecutable, args: ['run', 'audit:prod'] },
   { label: 'Smoke tests', command: npmExecutable, args: ['run', 'test:smoke'] },
   { label: 'De-credit scan', command: npmExecutable, args: ['run', 'scan:decredit'] },
   { label: 'Secret scan', command: npmExecutable, args: ['run', 'scan:secrets'] },

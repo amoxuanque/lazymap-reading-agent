@@ -1,80 +1,246 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Bookmark, ChevronRight, Clock3, Search, X } from 'lucide-react';
+import { CircularProgressbar, buildStyles } from 'react-circular-progressbar';
+import 'react-circular-progressbar/dist/styles.css';
 import { useApp } from '../contexts/AppContext';
-import { BookCard } from '../components/ui/BookCard';
-import { getShelfData } from '../lib/mockData';
-import { motion } from 'motion/react';
-import { cn } from '../lib/utils';
-import { Library } from 'lucide-react';
+import { getAllMaps } from '../lib/mockData';
+import './MyShelf.css';
 
-type Tab = keyof ReturnType<typeof getShelfData>;
+type DashboardBook = {
+  title: string;
+  originalTitle?: string;
+  author: string;
+  progress: number;
+  cover: string;
+};
+
+const libraryBooks: DashboardBook[] = [
+  {
+    title: '悉达多',
+    originalTitle: 'Siddhartha',
+    author: 'Hermann Hesse',
+    progress: 76,
+    cover: '/assets/reading-dashboard/siddhartha-cover.jpg',
+  },
+  {
+    title: '原子习惯',
+    originalTitle: 'Atomic Habits',
+    author: 'James Clear',
+    progress: 64,
+    cover: '/assets/reading-dashboard/atomic-habits-cover.jpg',
+  },
+  {
+    title: '沙丘',
+    originalTitle: 'Dune',
+    author: 'Frank Herbert',
+    progress: 12,
+    cover: '/assets/reading-dashboard/dune-cover.jpg',
+  },
+  {
+    title: '午夜图书馆',
+    originalTitle: 'The Midnight Library',
+    author: 'Matt Haig',
+    progress: 91,
+    cover: '/assets/reading-dashboard/midnight-library-cover.webp',
+  },
+  {
+    title: '人类简史',
+    originalTitle: 'Sapiens',
+    author: 'Yuval Noah Harari',
+    progress: 43,
+    cover: '/assets/reading-dashboard/sapiens-cover.webp',
+  },
+  {
+    title: '沉默的病人',
+    originalTitle: 'The Silent Patient',
+    author: 'Alex Michaelides',
+    progress: 28,
+    cover: '/assets/reading-dashboard/silent-patient-cover.jpg',
+  },
+];
+
+const recentBooks: DashboardBook[] = [
+  {
+    title: '克拉拉与太阳',
+    originalTitle: 'Klara and the Sun',
+    author: 'Kazuo Ishiguro',
+    progress: 0,
+    cover: '/assets/reading-dashboard/klara-cover.jpg',
+  },
+  libraryBooks[4],
+  libraryBooks[5],
+  {
+    title: '蛤蟆先生去看心理医生',
+    originalTitle: 'Counselling for Toads',
+    author: 'Robert de Board',
+    progress: 0,
+    cover: '/assets/reading-dashboard/counselling-for-toads-cover.jpg',
+  },
+];
 
 export function MyShelf() {
-  const { t } = useApp();
-  const [activeTab, setActiveTab] = useState<Tab>('organized');
-  const shelf = getShelfData();
+  const { navigate } = useApp();
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [showAll, setShowAll] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: 'wantToRead', label: t('shelf', 'wantToRead') },
-    { id: 'organized', label: t('shelf', 'organized') },
-    { id: 'favorited', label: t('shelf', 'favorited') },
-    { id: 'shared', label: t('shelf', 'shared') },
-  ];
+  useEffect(() => {
+    if (searchOpen) searchRef.current?.focus();
+  }, [searchOpen]);
 
-  const currentItems = shelf[activeTab];
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleBooks = libraryBooks
+    .filter((book) =>
+      [book.title, book.originalTitle, book.author].some((value) => value?.toLowerCase().includes(normalizedQuery)),
+    )
+    .slice(0, showAll || normalizedQuery ? libraryBooks.length : 4);
+
+  const openBook = (book: DashboardBook) => {
+    navigate('search', { query: book.originalTitle || book.title, author: book.author });
+  };
+
+  const continueReading = () => {
+    const existingMap = getAllMaps().find((map) => map.title.includes('置身事内'));
+    if (existingMap) {
+      navigate('map', { mapId: existingMap.id });
+      return;
+    }
+    navigate('gen', { query: '置身事内：中国政府与经济发展', author: '兰小欢' });
+  };
 
   return (
-    <div className="pb-12 min-h-screen bg-[#0f1117] text-zinc-300 px-4 sm:px-6 lg:px-8 pt-8">
-      <div className="mb-6 sm:mb-8">
-        <h1 className="text-2xl sm:text-3xl font-serif font-bold tracking-tight text-white">{t('shelf', 'title')}</h1>
-      </div>
-
-      <div className="mb-6 sm:mb-8 border-b border-white/10">
-        <nav className="-mb-px flex space-x-6 sm:space-x-8 overflow-x-auto scrollbar-hide" aria-label="Tabs">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={cn(
-                'whitespace-nowrap border-b-2 py-3 sm:py-4 px-1 text-sm sm:text-base font-medium transition-colors',
-                activeTab === tab.id
-                  ? 'border-amber-500 text-amber-500'
-                  : 'border-transparent text-zinc-500 hover:border-zinc-400 hover:text-zinc-300'
-              )}
-            >
-              {tab.label}
-              <span className={cn(
-                "ml-2 rounded-full px-2.5 py-0.5 text-xs font-medium",
-                activeTab === tab.id ? "bg-amber-500/10 text-amber-500" : "bg-white/5 text-zinc-500"
-              )}>
-                {shelf[tab.id].length}
-              </span>
-            </button>
-          ))}
-        </nav>
-      </div>
-
-      {currentItems.length > 0 ? (
-        <div className="grid grid-cols-1 gap-4 sm:gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          {currentItems.map((book, i) => (
-            <motion.div
-              key={`${activeTab}-${book.id}`}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, delay: i * 0.05 }}
-            >
-              <BookCard book={book} />
-            </motion.div>
-          ))}
+    <div className="reading-dashboard">
+      <header className="reading-dashboard__header">
+        <div>
+          <p className="reading-dashboard__eyebrow">READING SPACE</p>
+          <h1>我的阅读</h1>
         </div>
-      ) : (
-        <div className="flex flex-col items-center justify-center py-16 sm:py-20 text-center">
-          <div className="rounded-full bg-white/5 p-6 mb-4">
-            <Library className="h-8 w-8 text-zinc-500" />
-          </div>
-          <h3 className="text-lg font-medium text-white">No items here</h3>
-          <p className="mt-1 text-zinc-500">You haven't added anything to this shelf yet.</p>
+        <div className="reading-dashboard__header-actions">
+          <button
+            className="reading-dashboard__icon-button"
+            type="button"
+            aria-label={searchOpen ? '关闭搜索' : '搜索书库'}
+            onClick={() => {
+              setSearchOpen((open) => !open);
+              setQuery('');
+            }}
+          >
+            {searchOpen ? <X aria-hidden="true" /> : <Search aria-hidden="true" />}
+          </button>
+          <button className="reading-dashboard__avatar" type="button" aria-label="打开个人中心" onClick={() => navigate('profile')}>
+            <img src="/assets/reading-dashboard/mountain-avatar.webp" alt="水墨山景头像" />
+          </button>
+        </div>
+      </header>
+
+      {searchOpen && (
+        <div className="reading-dashboard__search">
+          <Search aria-hidden="true" />
+          <input
+            ref={searchRef}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索书名或作者"
+            aria-label="搜索书名或作者"
+          />
         </div>
       )}
+
+      <section className="reading-hero" aria-labelledby="current-reading-title">
+        <div className="reading-hero__cover-wrap">
+          <img
+            className="reading-hero__cover"
+            src="/assets/reading-dashboard/zhizhenshinei-cover.webp"
+            alt="《置身事内》封面"
+          />
+        </div>
+        <div className="reading-hero__content">
+          <p className="reading-hero__label">当前在读</p>
+          <h2 id="current-reading-title">置身事内</h2>
+          <p className="reading-hero__subtitle">中国政府与经济发展</p>
+          <p className="reading-hero__author">兰小欢</p>
+          <div className="reading-hero__progress" aria-label="阅读进度 43%">
+            <CircularProgressbar
+              value={43}
+              text="43%"
+              styles={buildStyles({
+                pathColor: '#c75b2d',
+                trailColor: '#eadfcd',
+                textColor: '#35261d',
+                strokeLinecap: 'round',
+                textSize: '25px',
+              })}
+            />
+            <span>阅读进度</span>
+          </div>
+          <button className="reading-hero__cta" type="button" onClick={continueReading}>继续阅读</button>
+        </div>
+      </section>
+
+      <section className="reading-dashboard__section" aria-labelledby="library-title">
+        <div className="reading-dashboard__section-heading">
+          <h2 id="library-title">书库</h2>
+          <button type="button" onClick={() => setShowAll((current) => !current)}>
+            {showAll ? '收起' : '查看全部'} <ChevronRight aria-hidden="true" />
+          </button>
+        </div>
+        {visibleBooks.length > 0 ? (
+          <div className="reading-library-grid">
+            {visibleBooks.map((book) => (
+              <button className="reading-book-card" type="button" key={book.originalTitle} onClick={() => openBook(book)}>
+                <img src={book.cover} alt={`${book.title}封面`} />
+                <div className="reading-book-card__body">
+                  <h3>{book.title}</h3>
+                  <p>{book.author}</p>
+                  <div className="reading-book-card__progress-row">
+                    <span className="reading-book-card__track" aria-hidden="true">
+                      <span style={{ width: `${book.progress}%` }} />
+                    </span>
+                    <span>{book.progress}%</span>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="reading-dashboard__empty">没有找到匹配的书籍</p>
+        )}
+      </section>
+
+      <section className="reading-stats" aria-label="阅读数据">
+        <article className="reading-stat-card">
+          <span className="reading-stat-card__icon reading-stat-card__icon--goal"><Clock3 aria-hidden="true" /></span>
+          <div>
+            <p>每日阅读目标</p>
+            <strong>38</strong>
+            <span>分钟 / 天</span>
+          </div>
+        </article>
+        <article className="reading-stat-card">
+          <span className="reading-stat-card__icon"><Bookmark aria-hidden="true" /></span>
+          <div>
+            <p>书签</p>
+            <strong>3</strong>
+            <span>最新：Chapter 14</span>
+          </div>
+        </article>
+      </section>
+
+      <section className="reading-dashboard__section reading-dashboard__section--recent" aria-labelledby="recent-title">
+        <div className="reading-dashboard__section-heading">
+          <h2 id="recent-title">最近添加</h2>
+          <span>4 本新书</span>
+        </div>
+        <div className="reading-recent-list">
+          {recentBooks.map((book) => (
+            <button type="button" key={book.originalTitle} onClick={() => openBook(book)} aria-label={`查看${book.title}`}>
+              <img src={book.cover} alt={`${book.title}封面`} />
+              <span>{book.title}</span>
+            </button>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

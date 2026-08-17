@@ -8,10 +8,12 @@ import { generateReadingMap } from '../services/geminiService';
 import { parseUploadedFile } from '../services/fileParser';
 
 type Status = 'idle' | 'parsing' | 'generating' | 'done' | 'error';
+type GenerationSourceKind = 'catalog' | 'upload' | null;
 
 export function GenerationCenter() {
   const { t, searchQuery, searchAuthor, navigate } = useApp();
   const [status, setStatus] = useState<Status>('idle');
+  const [generationSourceKind, setGenerationSourceKind] = useState<GenerationSourceKind>(null);
   const [generatedId, setGeneratedId] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [message, setMessage] = useState('');
@@ -22,6 +24,7 @@ export function GenerationCenter() {
     if (event.target.files && event.target.files.length > 0) {
       setSelectedFile(event.target.files[0]);
       setStatus('idle');
+      setGenerationSourceKind(null);
       setMessage('');
       setWarnings([]);
     }
@@ -33,6 +36,7 @@ export function GenerationCenter() {
     }
 
     setStatus('parsing');
+    setGenerationSourceKind('upload');
     setMessage(t('gen', 'parsing'));
     setWarnings([]);
 
@@ -40,7 +44,7 @@ export function GenerationCenter() {
       const parsed = await parseUploadedFile(selectedFile);
       setWarnings(parsed.warnings);
       setStatus('generating');
-      setMessage(t('gen', 'statusGenerating'));
+      setMessage(t('gen', 'statusGeneratingUpload'));
 
       const newMap = await generateReadingMap({
         title: parsed.title,
@@ -66,7 +70,8 @@ export function GenerationCenter() {
     }
 
     setStatus('generating');
-    setMessage(t('gen', 'statusGenerating'));
+    setGenerationSourceKind('catalog');
+    setMessage(t('gen', 'statusGeneratingCatalog'));
     setWarnings([]);
 
     try {
@@ -108,7 +113,7 @@ export function GenerationCenter() {
             <p className="mt-2 text-sm sm:text-base text-zinc-400 flex-1">{t('gen', 'uploadDesc')}</p>
 
             <div className="mt-6 rounded-2xl border border-white/5 bg-zinc-950/40 p-4 text-sm text-zinc-500">
-              自己上传文件生成阅读地图，适合已有 TXT / MD / EPUB 正文时直接使用。
+              基于正文证据生成，适合深度拆解结构、方法和阅读路线。
             </div>
 
             <div className="mt-6 sm:mt-8 rounded-xl border-2 border-dashed border-white/10 bg-zinc-900/50 p-6 sm:p-8 text-center">
@@ -123,7 +128,7 @@ export function GenerationCenter() {
                 <>
                   <Button
                     variant="secondary"
-                    className="w-full bg-zinc-800 hover:bg-zinc-700 text-white border-none"
+                    className="w-full"
                     onClick={() => fileInputRef.current?.click()}
                   >
                     选择文件
@@ -138,7 +143,14 @@ export function GenerationCenter() {
                   </div>
                   <p className="text-xs text-zinc-500">{t('gen', 'selectedFile')}</p>
                   <div className="flex gap-2 w-full">
-                    <Button variant="outline" className="flex-1 border-white/10" onClick={() => setSelectedFile(null)}>
+                    <Button
+                      variant="outline"
+                      className="flex-1 border-white/10"
+                      onClick={() => {
+                        setSelectedFile(null);
+                        setGenerationSourceKind(null);
+                      }}
+                    >
                       取消
                     </Button>
                     <Button
@@ -171,15 +183,15 @@ export function GenerationCenter() {
             <p className="mt-2 text-sm sm:text-base text-zinc-400 flex-1">{t('gen', 'paidDesc')}</p>
 
             <div className="mt-6 rounded-2xl border border-white/5 bg-zinc-950/40 p-4 text-sm text-zinc-500">
-              没有文件时，直接按书名全网搜索并生成阅读地图。
+              基于公开资料整理，适合判断值不值得读、怎么读。
             </div>
 
             <div className="mt-6 sm:mt-8 space-y-4">
               <div className="rounded-xl border border-white/10 bg-zinc-900/50 px-4 py-3">
                 <label className="text-[10px] sm:text-xs font-medium text-zinc-500 uppercase tracking-wider">目标书目</label>
-              <div className="font-medium text-white mt-1 text-sm sm:text-base">{searchQuery || '请输入书名'}</div>
-              {searchAuthor && <div className="mt-1 text-xs text-zinc-500">{searchAuthor}</div>}
-            </div>
+                <div className="mt-1 text-sm font-medium text-white sm:text-base">{searchQuery || '请输入书名'}</div>
+                {searchAuthor && <div className="mt-1 text-xs text-zinc-500">{searchAuthor}</div>}
+              </div>
               <Button
                 variant="primary"
                 className="w-full h-12 sm:h-14 text-base sm:text-lg bg-amber-500 hover:bg-amber-600 text-zinc-900 border-none"
@@ -201,7 +213,11 @@ export function GenerationCenter() {
             <>
               <Loader2 className="mx-auto h-12 w-12 sm:h-16 sm:w-16 animate-spin text-amber-500" />
               <h2 className="mt-4 sm:mt-6 text-xl sm:text-2xl font-bold text-white">{message}</h2>
-              <p className="mt-2 text-sm sm:text-base text-zinc-400">正在生成阅读地图，请稍候。</p>
+              <p className="mt-2 text-sm sm:text-base text-zinc-400">
+                {generationSourceKind === 'upload'
+                  ? '正在基于正文证据整理深度阅读地图，请稍候。'
+                  : '正在基于公开资料整理读前导读地图，请稍候。'}
+              </p>
             </>
           ) : status === 'done' ? (
             <>

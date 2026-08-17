@@ -12,12 +12,12 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         className={cn(
-          'inline-flex items-center justify-center rounded-lg font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 disabled:pointer-events-none disabled:opacity-50',
+          'inline-flex items-center justify-center rounded-xl font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c75b2d] focus-visible:ring-offset-2 focus-visible:ring-offset-[#f7f0e4] disabled:pointer-events-none disabled:opacity-50',
           {
-            'bg-amber-500 text-zinc-900 hover:bg-amber-600': variant === 'primary',
-            'bg-zinc-800 text-white hover:bg-zinc-700': variant === 'secondary',
-            'border border-white/10 bg-transparent hover:bg-white/5 text-zinc-300': variant === 'outline',
-            'hover:bg-white/5 text-zinc-400 hover:text-white': variant === 'ghost',
+            'bg-[#c75b2d] text-[#fffaf2] hover:bg-[#ad4825] shadow-[0_8px_18px_rgba(151,60,26,0.16)]': variant === 'primary',
+            'bg-[#ead3ad] text-[#4b382c] hover:bg-[#dfc393]': variant === 'secondary',
+            'border border-[#cdbba3] bg-transparent hover:bg-[#eadfcd] text-[#4b382c]': variant === 'outline',
+            'hover:bg-[#eadfcd] text-[#796a5d] hover:text-[#35261d]': variant === 'ghost',
             'h-9 px-4 text-sm': size === 'sm',
             'h-11 px-6 text-base': size === 'md',
             'h-14 px-8 text-lg': size === 'lg',

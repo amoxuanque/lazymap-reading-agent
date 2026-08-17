@@ -116,7 +116,10 @@ export interface ReadingMap extends SearchBook {
   sourceMeta?: {
     kind: SourceKind;
     mode: 'source-grounded' | 'title-only' | 'prototype-fallback';
+    productType?: 'pre-reading-guide' | 'deep-reading-map';
+    sourceBasis?: 'public-grounding' | 'uploaded-text';
+    confidenceLabel?: '基于公开资料整理' | '基于上传正文整理';
+    disclaimer?: '用于读前判断和阅读路线规划，不等同于原书全文精读' | '优先依据上传正文生成，建议结合原书逐章核对细节';
     summary?: string;
   };
 }
-
